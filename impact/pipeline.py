@@ -24,6 +24,7 @@ class ImpactAnalyzer:
         self.parser, self.store_for = parser, store_for
         self.runner, self.coverage, self.max_hops = runner, coverage, max_hops
         self._covers: dict[str, set[tuple[str, str]]] = {}
+        self._failing: dict[str, set[str]] = {}  # tests failing on the unpatched code: the reported bug
 
     def baseline_covers(self, repo: Path, progress: Progress) -> set[tuple[str, str]]:
         """Which test executes which symbol on the unpatched code. Cached per repo."""
@@ -32,10 +33,17 @@ class ImpactAnalyzer:
         cached = key in self._covers
         if not cached:
             base = scratch_copy(repo, "base")
-            self._covers[key] = self.coverage.covers(base, self.parser.parse(base))
+            graph = self.parser.parse(base)
+            self._covers[key] = self.coverage.covers(base, graph)
+            outcomes = self.runner.run(base, [nodeid(n.file, n.name) for n in graph.of_kind(Kind.TEST)])
+            self._failing[key] = {t for t, o in outcomes.items() if o.status in ("failed", "error")}
         pairs = self._covers[key]
-        progress.done("baseline", f"{len(pairs)} test→function links observed" + (" (cached)" if cached else ""))
+        progress.done("baseline", f"{len(pairs)} test→function links observed, "
+                                  f"{len(self._failing[key])} tests failing before the fix" + (" (cached)" if cached else ""))
         return pairs
+
+    def failing_before(self, repo: Path) -> set[str]:
+        return self._failing.get(_fingerprint(repo.resolve()), set())
 
     def analyze(self, repo: Path, diff: str, progress: Progress = NoProgress()) -> Report:
         repo = repo.resolve()
@@ -64,7 +72,7 @@ class ImpactAnalyzer:
         code = [i for i in impacted if graph.nodes[i.id].kind != Kind.TEST]
         progress.done("blast", f"{len(code)} dependent symbols, up to {max((i.hops for i in code), default=0)} hops")
 
-        tests = self._select_tests(graph, changed_ids, impacted, covers, added_tests)
+        tests = self._select_tests(graph, changed_ids, impacted, covers, added_tests, self.failing_before(repo))
         progress.start("tests", f"Run {len(tests)} selected tests in the sandbox")
         outcomes = self.runner.run(work, [tests[t]["nodeid"] for t in tests])
         paths = {i.id: list(i.path) for i in impacted}
@@ -93,7 +101,7 @@ class ImpactAnalyzer:
         )
 
     def _select_tests(self, graph: CodeGraph, changed: list[str], impacted, covers,
-                      added: list[str]) -> dict[str, dict]:
+                      added: list[str], failing_before: set[str]) -> dict[str, dict]:
         """Static: tests among the dependents. Runtime: tests observed executing changed/impacted code."""
         targets = set(changed) | {i.id for i in impacted}
         selected: dict[str, dict] = {}
@@ -114,6 +122,9 @@ class ImpactAnalyzer:
                 add(test_id, "runtime", direct=_is_unit_test(test_id, changed, covers))
         for test_id in added:
             add(test_id, "added by patch", direct=False)
+        for test_id in failing_before:  # the reported bug must be fixed, whatever the patch touched
+            if test_id in graph.nodes:
+                add(test_id, "failing before the fix", direct=False)
         return selected
 
     @staticmethod

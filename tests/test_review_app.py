@@ -28,7 +28,7 @@ class ScriptedLLM:
     def __init__(self, *replies):
         self.replies = list(replies)
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, temperature: float = 0.0) -> str:
         return self.replies.pop(0)
 
 
@@ -41,7 +41,7 @@ def test_agent_corrects_its_own_failing_test(tmp_path):
     llm = ScriptedLLM(FIX, WRONG_TEST, RIGHT_TEST)
     analyzer = ImpactAnalyzer(PythonParser(), lambda _: MemoryStore(), PytestRunner(), CoverageMapper())
     app = ReviewApp(tmp_path / "restaurant", SEED, analyzer, Fixer(llm), TestWriter(llm),
-                    ["python", "receipt.py"], "fake", "memory")
+                    [["python", "receipt.py"]], "fake", "memory")
     app.start("ask", {"request": "receipt total too high"})
     wait(app)
     assert app.session.attempts[-1].report.verdict == "unvalidated"
@@ -82,7 +82,7 @@ def test_graph_locks_shared_code_and_revision_fixes_the_caller(tmp_path):
     llm = ScriptedLLM(BREAK_SHARED, BREAK_SHARED, FIX_CALLER)
     analyzer = ImpactAnalyzer(PythonParser(), lambda _: MemoryStore(), PytestRunner(), CoverageMapper())
     app = ReviewApp(tmp_path / "restaurant", DEMO_SEED, analyzer, Fixer(llm), TestWriter(llm),
-                    ["python", "receipt.py"], "fake", "memory")
+                    [["python", "receipt.py"]], "fake", "memory")
     app.start("ask", {"request": "receipt total too high"})
     wait(app)
     first = app.session.attempts[-1].report

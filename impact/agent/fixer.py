@@ -42,7 +42,7 @@ class Fixer:
         return self._ask(repo, prompt)
 
     def revise(self, repo: Path, request: str, previous: Proposal, report: Report,
-               locked: set[str] | None = None) -> Proposal:
+               locked: set[str] | None = None, temperature: float = 0.0) -> Proposal:
         """Graph guardrail: shared code whose change broke other callers is locked, and the model writes a
         fresh fix against the original files that leaves it untouched."""
         locked = (locked or set()) | locked_symbols(report)
@@ -56,7 +56,7 @@ class Fixer:
                   + "Do not edit test files. Do not reason step by step; the explanation is one sentence.\n\n"
                   f"{RULES}\n")
         for _ in range(2):  # one retry if the model touches what the graph locked
-            explanation, found = edits.parse(self.llm.complete(prompt))
+            explanation, found = edits.parse(self.llm.complete(prompt, temperature))
             bad = sorted({e.file for e in found if e.file in locked_files or Path(e.file).name.startswith("test_")})
             if not bad:
                 return Proposal(explanation, edits.to_diff(repo, found))

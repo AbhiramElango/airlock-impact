@@ -23,7 +23,7 @@ class FakeLLM:
     def __init__(self, reply: str):
         self.reply, self.prompts = reply, []
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, temperature: float = 0.0) -> str:
         self.prompts.append(prompt)
         return self.reply
 

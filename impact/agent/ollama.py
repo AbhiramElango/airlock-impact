@@ -25,9 +25,9 @@ class OllamaClient:
         require_loopback(url)
         self.model, self.url, self.num_ctx, self.timeout_s = model, url, num_ctx, timeout_s
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, temperature: float = 0.0) -> str:
         body = {"model": self.model, "prompt": prompt, "stream": False, "think": False, "keep_alive": "30m",
-                "options": {"temperature": 0, "num_ctx": self.num_ctx, "num_predict": 1500}}
+                "options": {"temperature": temperature, "num_ctx": self.num_ctx, "num_predict": 1500}}
         req = urllib.request.Request(f"{self.url}/api/generate", json.dumps(body).encode(),
                                      {"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:

@@ -27,7 +27,7 @@ class EvidenceProvider(Protocol):
 
 
 class LLM(Protocol):
-    def complete(self, prompt: str) -> str: ...
+    def complete(self, prompt: str, temperature: float = 0.0) -> str: ...
 
 
 class Progress(Protocol):

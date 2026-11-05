@@ -72,3 +72,11 @@ def test_added_test_closes_the_gap(analyzer):
     assert added[0].status == "passed"
     assert [c.id for c in r.changed] == ["tax.add_tax"]  # the test file's import edit is not "code under change"
     assert r.verdict == "validated"
+
+
+def test_tests_failing_before_are_always_run(analyzer):
+    unrelated = (DEMO / "patches" / "good_tax.diff").read_text()
+    r = analyzer.analyze(DEMO / "restaurant", unrelated)
+    before = {t.id for t in r.tests if "failing before the fix" in t.why}
+    assert before == {"test_tax.test_add_tax", "test_receipt.test_total_includes_tax"}
+    assert all(t.status == "passed" for t in r.tests if t.id in before)

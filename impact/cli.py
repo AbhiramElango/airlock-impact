@@ -47,15 +47,16 @@ def cmd_analyze(args) -> None:
 def cmd_serve(args) -> None:
     import shlex
     import sys
+    args.run = args.run or ["python receipt.py", "python invoice.py"]
     from .agent.fixer import Fixer
     from .agent.ollama import OllamaClient
     from .agent.testwriter import TestWriter
     from .web.server import ReviewApp, serve
     llm = OllamaClient(args.model)
-    run_cmd = [sys.executable if a == "python" else a for a in shlex.split(args.run)]
+    run_cmds = [[sys.executable if a == "python" else a for a in shlex.split(c)] for c in args.run]
     app = ReviewApp(Path(args.repo).resolve(), Path(args.seed).resolve() if args.seed else None,
                     build_analyzer(args.store, args.max_hops), Fixer(llm), TestWriter(llm),
-                    run_cmd, args.model, args.store)
+                    run_cmds, args.model, args.store)
     serve(app, args.port)
 
 
@@ -76,7 +77,7 @@ def main() -> None:
     srv = sub.add_parser("serve", help="Impact Review web UI")
     srv.add_argument("--repo", default="demo/work/restaurant", help="repo under review (patches are applied here on approve)")
     srv.add_argument("--seed", default="demo/restaurant", help="pristine copy used by Reset; '' to disable")
-    srv.add_argument("--run", default="python receipt.py", help="the repo's entry point, for the Run button")
+    srv.add_argument("--run", action="append", help="program(s) the Run button executes (repeatable)")
     srv.add_argument("--model", default="qwen3.5:9b")
     srv.add_argument("--store", choices=["neo4j", "memory"], default="neo4j")
     srv.add_argument("--max-hops", type=int, default=8)

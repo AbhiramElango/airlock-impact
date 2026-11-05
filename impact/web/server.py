@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from ..agent.edits import EditError
 from ..agent.fixer import Fixer, Proposal, feedback, locked_symbols
 from ..agent.testwriter import TestWriter
 from ..runner import run_command
@@ -22,6 +23,7 @@ from ..workspace import IGNORE, apply_patch, scratch_copy
 STATIC = Path(__file__).resolve().parent / "static"
 TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}
 MAX_BODY = 20_000
+CANDIDATE_TEMPERATURES = (0.0, 0.4, 0.7, 0.9)
 VERDICT_TEXT = {"regression": "regression: a selected test fails",
                 "unvalidated": "tests pass, but some affected code has no test",
                 "validated": "every affected function has passing tests"}
@@ -78,9 +80,9 @@ class Session:
 
 class ReviewApp:
     def __init__(self, repo: Path, seed: Path | None, analyzer: ImpactAnalyzer, fixer: Fixer,
-                 writer: TestWriter, run_cmd: list[str], model: str, store: str):
+                 writer: TestWriter, run_cmds: list[list[str]], model: str, store: str):
         self.repo, self.seed, self.analyzer, self.fixer, self.writer = repo, seed, analyzer, fixer, writer
-        self.run_cmd, self.model, self.store = run_cmd, model, store
+        self.run_cmds, self.model, self.store = run_cmds, model, store
         self.session = Session()
         self.lock = threading.Lock()
         if seed:
@@ -91,7 +93,7 @@ class ReviewApp:
         s = self.session
         return {"repo": self.repo.name, "model": self.model, "store": self.store, "request": s.request,
                 "busy": s.busy, "error": s.error,
-                "run_cmd": " ".join(self.run_cmd), "can_reset": bool(self.seed),
+                "programs": [c[-1] for c in self.run_cmds], "can_reset": bool(self.seed),
                 "attempts": [a.to_dict() for a in s.attempts],
                 "steps": [{"attempt": st.attempt, "key": st.key, "label": st.label, "status": st.status,
                            "detail": st.detail, "seconds": st.seconds} for st in s.steps]}
@@ -115,7 +117,7 @@ class ReviewApp:
             "cover": self._cover,
         }
         if action == "run":
-            return self._run_program()
+            return self._run_program(int(body.get("program", 0)))
         if action == "reset":
             return self._reset()
         if action not in jobs:
@@ -188,14 +190,27 @@ class ReviewApp:
         note = f"Locked {', '.join(locked)}: correct before the change, other code depends on it." if locked else ""
         log.start("feedback", "Read the dependency evidence")
         log.done("feedback", note or feedback(last.report).splitlines()[0])
-        log.start("patch", f"Local model ({self.model}) revises the patch")
-        proposal = self.fixer.revise(self.repo, self.session.request, Proposal(last.explanation, last.diff),
-                                     last.report, self.session.locked)
-        proposal = Proposal(f"{note} {proposal.explanation}".strip(), proposal.diff)
-        log.done("patch", proposal.explanation)
-        self._analyze("revision", proposal)
+        # generate and verify: the graph judges each candidate; accept the first with no regressions
+        best = None
+        for n, temperature in enumerate(CANDIDATE_TEMPERATURES, 1):
+            log.start("patch", f"Local model ({self.model}) writes candidate {n}")
+            try:
+                candidate = self.fixer.revise(self.repo, self.session.request, Proposal(last.explanation, last.diff),
+                                              last.report, self.session.locked, temperature)
+            except EditError as e:
+                log.done("patch", f"rejected: {e}", ok=False)
+                continue
+            report = self.analyzer.analyze(self.repo, candidate.diff)
+            log.done("patch", f"candidate {n}: {report.verdict}", ok=report.verdict != "regression")
+            best = (candidate, report)
+            if report.verdict != "regression":
+                break
+        if best is None:
+            raise EditError("no candidate respected the locked code")
+        proposal = Proposal(f"{note} {best[0].explanation}".strip(), best[0].diff)
+        self._finish("revision", proposal, best[1], log)
 
-    def _run_program(self) -> dict:
+    def _run_program(self, index: int) -> dict:
         """Runs the repo's entry point (fixed command, never model-chosen) on the agent's latest patch,
         in a sandbox; on the original code when there is no patch yet."""
         root, label = self.repo, "original code"
@@ -203,8 +218,10 @@ class ReviewApp:
             root = scratch_copy(self.repo, "run")
             apply_patch(root, self.session.attempts[-1].diff)
             label = f"with the agent's patch (attempt {len(self.session.attempts)})"
-        out = run_command(root, self.run_cmd)
-        return {**self.state(), "run": {"cmd": " ".join(self.run_cmd), "label": label, **out}}
+        if not 0 <= index < len(self.run_cmds):
+            raise ValueError("unknown program")
+        cmd = self.run_cmds[index]
+        return {**self.state(), "run": {"label": label, "cmd": " ".join(["python", *cmd[1:]]), **run_command(root, cmd)}}
 
     def _reset(self) -> dict:
         with self.lock:

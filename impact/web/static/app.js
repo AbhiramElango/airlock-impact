@@ -23,6 +23,7 @@ let cy = null;
 let polling = false;
 let seenAttempts = 0;
 let animateNext = false;
+const expanded = new Set();
 let rippleTimers = [];
 
 // ---------- data ----------
@@ -46,7 +47,7 @@ async function act(action, body = {}) {
   try {
     state = await api(`/api/${action}`, body);
     if (action === "reset") Object.keys(cache).forEach((k) => delete cache[k]);
-    if (action === "reset") { tabs = []; active = null; seenAttempts = 0; selected = -1; }
+    if (action === "reset") { tabs = []; active = null; seenAttempts = 0; selected = -1; expanded.clear(); }
     onState();
     if (state.busy) poll();
   } catch (e) { toast(e.message); }
@@ -132,7 +133,11 @@ function render() {
   $("pill-model").textContent = state.model;
   $("pill-store").textContent = `graph: ${state.store}`;
   $("btn-reset").classList.toggle("hidden", !state.can_reset);
-  $("run-cmd").textContent = state.run_cmd.replace(/^\S*python\S*/, "python");
+  if ($("run-btns").dataset.n !== String(state.programs.length)) {
+    $("run-btns").dataset.n = state.programs.length;
+    $("run-btns").innerHTML = state.programs.map((p, i) => `<button class="run-btn" data-p="${i}">▶ ${esc(p)}</button>`).join("");
+    $("run-btns").querySelectorAll(".run-btn").forEach((b) => b.addEventListener("click", () => runProgram(+b.dataset.p)));
+  }
   $("btn-ask").disabled = state.busy;
   const v = view();
   renderTree(v);
@@ -324,46 +329,88 @@ function chainHtml(r) {
   }).join("") + (all.length > 4 ? `<div class="more">+${all.length - 4} more paths in the graph</div>` : "");
 }
 
+const fn = (id) => `${id.split(".").pop()}()`;
+
+function headline(a) {
+  // one plain-English sentence for the card
+  const r = a.report;
+  const touched = new Set(Object.keys(parseDiff(a.diff)));
+  const nodes = Object.fromEntries(r.graph.nodes.map((n) => [n.id, n]));
+  const failing = r.tests.filter((t) => FAILED(t.status));
+  if (failing.length) {
+    const victims = [...new Set(failing.flatMap((t) => t.path.slice(1, -1)))];
+    const outside = victims.filter((v) => nodes[v] && !touched.has(nodes[v].file));
+    if (outside.length) return `Broke ${outside.map((v) => `<code>${esc(fn(v))}</code> in <code>${esc(nodes[v].file)}</code>`).join(", ")}, a file the agent never touched`;
+    if (victims.length) return `Broke ${victims.map((v) => `<code>${esc(fn(v))}</code>`).join(", ")}, which depends on the change`;
+    return `Its own test fails: <code>${esc(failing[0].id.split(".").pop())}</code>`;
+  }
+  if (r.gaps.length) return `No regressions, but ${r.gaps.map((g) => `<code>${esc(fn(g))}</code>`).join(", ")} has no test`;
+  return "Every affected function is tested and passing";
+}
+
+function oneLiner(a) {
+  const changed = a.report.changed.map((c) => fn(c.id)).join(", ") || "tests only";
+  const icon = { regression: "❌", unvalidated: "⚠️", validated: "✅" }[a.report.verdict];
+  return `${a.source === "tests" ? "added tests" : `changed <code>${esc(changed)}</code>`} · ${icon} ${headline(a)}`;
+}
+
 function dependencyCard(a, i) {
   const r = a.report;
   const latest = i === state.attempts.length - 1;
   const failed = r.tests.filter((t) => FAILED(t.status));
-  const added = r.tests.filter((t) => t.why.includes("added by patch"));
   const direct = r.tests.filter((t) => t.scope === "direct" && !t.why.includes("added by patch"));
   let action = "";
   if (latest && !state.busy && r.verdict === "regression") action = `<button class="btn primary sm" data-act="revise">Fix it using this evidence</button>`;
-  if (latest && !state.busy && r.verdict === "unvalidated") action = `<button class="btn primary sm" data-act="cover">Write tests for ${esc(r.gaps.map((g) => g.split(".").pop() + "()").join(", "))}</button>`;
-  const summary = failed.length ? `${failed.map((t) => `<code>${esc(t.id.split(".").pop())}</code>`).join(", ")} failed: ${esc((failed[0].message || "").split("\n")[0])}`
-    : r.gaps.length ? `All ${r.tests.length} tests pass, but nothing tests ${r.gaps.map((g) => `<code>${esc(g)}</code>`).join(", ")}.`
-    : `All ${r.tests.length} tests pass${added.length ? ` (${added.length} new)` : ""}, and every affected function is covered.`;
+  if (latest && !state.busy && r.verdict === "unvalidated") action = `<button class="btn primary sm" data-act="cover">Write tests for ${esc(r.gaps.map(fn).join(", "))}</button>`;
   const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
   return `<div class="card dep-card ${r.verdict}" data-i="${i}">
-    <div class="card-title"><span>Dependency check</span><span class="vchip ${r.verdict}">${CHIP[r.verdict]}</span></div>
+    <div class="card-title"><span class="vchip ${r.verdict}">${CHIP[r.verdict]}</span>
+      <a class="view-graph" data-i="${i}" title="Replay on graph">▶ replay</a></div>
+    <div class="headline">${headline(a)}</div>
     ${chainHtml(r)}
-    <div class="contrast">
-      <div class="row"><span class="lbl">Typical agent checks</span><span>${plural(direct.length, "test")} <small>(the changed function's own)</small></span></div>
-      <div class="row strong"><span class="lbl">Dependency graph found</span><span>${plural(r.impacted.length, "dependent")} · ${plural(r.tests.length, "test")}${r.gaps.length ? ` · <b class="warn">${r.gaps.length} untested</b>` : ""}${failed.length ? ` · <b class="bad">${failed.length} failing</b>` : ""}</span></div>
-    </div>
-    <div class="dep-summary">${summary}</div>
-    <div class="dep-foot"><a class="view-graph" data-i="${i}">▶ replay on graph</a></div>
+    <div class="contrast-line">Typical agent checks <b>${plural(direct.length, "test")}</b> · dependency graph checked
+      <b>${plural(r.impacted.length, "dependent")}, ${plural(r.tests.length, "test")}</b>${failed.length ? ` · <b class="bad">${failed.length} failing</b>` : ""}</div>
     ${action}
   </div>`;
 }
 
+const STAGES = [["fix", "Fix"], ["check", "Check"], ["revise", "Revise"], ["tests", "Tests"], ["done", "Validated"]];
+
+function stage() {
+  const a = state.attempts;
+  if (!a.length) return state.busy ? "fix" : null;
+  const last = a[a.length - 1];
+  if (state.busy) return last.report.verdict === "regression" ? "revise" : "tests";
+  if (last.report.verdict === "validated") return "done";
+  if (last.report.verdict === "unvalidated") return "tests";
+  return a.length > 1 ? "revise" : "check";
+}
+
+function renderStepper() {
+  const cur = stage();
+  const idx = STAGES.findIndex(([k]) => k === cur);
+  $("stepper").innerHTML = STAGES.map(([k, label], n) =>
+    `<span class="stp ${n < idx ? "past" : n === idx ? "now" : ""}">${n < idx ? "✓ " : ""}${label}</span>`).join('<span class="stp-sep">›</span>');
+}
+
 function renderChat() {
+  renderStepper();
   const chat = $("chat");
   if (!state.request && !state.attempts.length) {
-    chat.innerHTML = `<div class="chat-empty">Run the program, then tell the agent what looks wrong.<br>
-      It fixes the code, then checks everything that depends on the change.</div>`;
+    chat.innerHTML = `<div class="chat-empty">▶ Run the program, then tell the agent what looks wrong.<br>
+      After every change, the dependency graph checks everything the change touches.</div>`;
     return;
   }
+  const last = state.attempts.length - 1;
   const parts = [`<div class="msg user">${esc(state.request)}</div>`];
   state.attempts.forEach((a, i) => {
-    const intro = a.source === "tests" ? "I added tests for the code the check found untested:"
-      : a.source === "revision" ? "Revised using the dependency evidence:" : "";
+    if (i < last && !expanded.has(i)) {
+      parts.push(`<div class="row-collapsed ${a.report.verdict}" data-x="${i}"><span class="n">${i + 1}</span><span>${oneLiner(a)}</span></div>`);
+      return;
+    }
+    const intro = a.source === "tests" ? "Added tests for the untested code" : a.source === "revision" ? "Revised using the dependency evidence" : "Proposed fix";
     parts.push(`<div class="msg agent ${i === selected ? "selected" : ""}" data-i="${i}">
-      <div class="who">Agent · ${esc(state.model)}</div>
-      ${intro ? `<div class="intro">${intro}</div>` : ""}
+      <div class="who"><span>${i + 1} · ${intro}</span>${i < last ? `<a class="collapse" data-x="${i}">collapse</a>` : ""}</div>
       <div class="expl">${esc(a.explanation).replace(/^((?:Locked .+? depends? on it\. ?)+)/, '<span class="lock">🔒 $1</span>')}</div>
       ${diffCard(a.diff, newFiles(i))}
     </div>`);
@@ -375,6 +422,14 @@ function renderChat() {
   }
   chat.innerHTML = parts.join("");
   chat.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", () => act(b.dataset.act)));
+  chat.querySelectorAll("[data-x]").forEach((el) => el.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const i = +el.dataset.x;
+    expanded.has(i) ? expanded.delete(i) : expanded.add(i);
+    selected = i;
+    $("graph").dataset.key = "";
+    render();
+  }));
   chat.querySelectorAll(".msg.agent, .view-graph").forEach((el) => el.addEventListener("click", () => {
     selected = +el.dataset.i;
     if (el.classList.contains("view-graph")) { panelTab = "graph"; animateNext = true; }
@@ -529,9 +584,9 @@ function renderGraph(v, animate = false) {
   if (animate) ripple(v);
 }
 
-async function runProgram() {
+async function runProgram(program) {
   try {
-    const res = await api("/api/run", {});
+    const res = await api("/api/run", { program });
     runs.push(res.run);
     panelTab = "terminal";
     renderTerminal();
@@ -541,16 +596,15 @@ async function runProgram() {
 
 function renderTerminal() {
   if (!runs.length) return;
-  const shade = (text) => esc(text).replace(/^(Total.*)$/m, (line) => `<span class="hl">${line}</span>`);
+  const shade = (text) => esc(text).replace(/^(.*\btotal\b.*)$/gim, (line) => `<span class="hl">${line}</span>`);
   $("terminal").innerHTML = runs.map((r) => `<div class="term-run">
-      <div class="term-cmd">$ ${esc(r.cmd.replace(/^\S*python\S*/, "python"))}<span class="tag">${esc(r.label)}</span></div>
+      <div class="term-cmd">$ ${esc(r.cmd)}<span class="tag">${esc(r.label)}</span></div>
       <div class="term-out">${shade(r.output)}</div></div>`).join("");
   $("terminal").scrollTop = $("terminal").scrollHeight;
 }
 
 // ---------- events ----------
 $("btn-ask").addEventListener("click", () => act("ask", { request: $("request").value.trim() }));
-$("btn-run").addEventListener("click", runProgram);
 $("request").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("btn-ask").click(); } });
 $("btn-reset").addEventListener("click", () => { runs.length = 0; $("terminal").innerHTML = '<div class="term-empty">Press ▶ Run to execute the program on the current code.</div>'; act("reset"); });
 document.querySelectorAll(".ptab").forEach((b) => b.addEventListener("click", () => {
