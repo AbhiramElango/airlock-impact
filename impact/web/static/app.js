@@ -5,7 +5,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const SOURCE = { agent: "agent fix", revision: "agent revision", tests: "agent adds tests" };
 const runs = [];
 const VERDICT = {
-  regression: "Regression: do not approve",
+  regression: "Regression",
   unvalidated: "Passes, but parts are untested",
   validated: "Validated",
 };
@@ -22,7 +22,6 @@ let panelTab = "graph";
 let cy = null;
 let polling = false;
 let seenAttempts = 0;
-let confirmApprove = false;
 
 // ---------- data ----------
 async function api(path, body) {
@@ -43,11 +42,9 @@ function toast(msg) {
 
 async function act(action, body = {}) {
   try {
-    confirmApprove = false;
     state = await api(`/api/${action}`, body);
-    if (action === "reset" || action === "approve") Object.keys(cache).forEach((k) => delete cache[k]);
+    if (action === "reset") Object.keys(cache).forEach((k) => delete cache[k]);
     if (action === "reset") { tabs = []; active = null; seenAttempts = 0; selected = -1; }
-    if (action === "approve" && active) await openFile(active);
     onState();
     if (state.busy) poll();
   } catch (e) { toast(e.message); }
@@ -139,8 +136,7 @@ function render() {
   renderTree(v);
   renderTabs(v);
   renderEditor(v);
-  renderRun();
-  renderDecision(v);
+  renderChat();
   renderPanel(v);
 }
 
@@ -254,8 +250,7 @@ function renderEditor(v) {
       <p>Ask the agent for a fix. Changed and affected files light up in the explorer.</p></div>`;
     return;
   }
-  const applied = state.approved && selected === state.attempts.length - 1;
-  const rows = diffRows(cache[active].replace(/\n$/, "").split("\n"), v && !applied ? (v.hunks[active] || []) : []);
+  const rows = diffRows(cache[active].replace(/\n$/, "").split("\n"), v ? (v.hunks[active] || []) : []);
   const annotated = v ? Object.values(v.nodes)
     .filter((nd) => nd.file === active && (nd.kind === "Function" || nd.kind === "Test"))
     .map((nd) => ({ nd, lens: lensFor(v, nd) })).filter((x) => x.lens) : [];
@@ -273,74 +268,87 @@ function renderEditor(v) {
   ed.innerHTML = `<div class="code">${html}</div>`;
 }
 
-function renderRun() {
-  const run = $("run");
-  if (!state.steps.length) {
-    run.innerHTML = `<div class="run-empty">The agent's work appears here step by step: patch → graph → blast radius → tests → verdict.</div>`;
-    return;
-  }
-  const groups = {};
-  state.steps.forEach((s) => (groups[s.attempt] ||= []).push(s));
-  run.innerHTML = Object.keys(groups).map(Number).sort((x, y) => x - y).map((i) => {
-    const a = state.attempts[i];
-    const head = a ? `<span>Attempt ${i + 1} <span class="src">· ${SOURCE[a.source]}</span></span>
-        <span class="vchip ${a.report.verdict}">${CHIP[a.report.verdict]}</span>`
-      : `<span>Attempt ${i + 1} <span class="src">· running…</span></span>`;
-    const steps = groups[i].map((s) => `
-      <div class="step ${s.status}">
-        <span class="ic">${s.status === "done" ? "✓" : s.status === "failed" ? "✕" : ""}</span>
-        <span class="lb">${esc(s.label)}</span>
-        <span class="sec">${s.seconds != null ? s.seconds.toFixed(1) + "s" : ""}</span>
-        ${s.detail ? `<span class="dt">${esc(s.detail)}</span>` : ""}
-      </div>`).join("");
-    return `<div class="attempt ${i === selected ? "selected" : ""}" data-i="${i}">
-      <div class="attempt-head">${head}</div>${steps}</div>`;
-  }).join("");
-  run.querySelectorAll(".attempt-head").forEach((el) => el.addEventListener("click", () => {
-    const i = +el.parentElement.dataset.i;
-    if (state.attempts[i]) { selected = i; $("graph").dataset.key = ""; render(); }
-  }));
-  run.scrollTop = run.scrollHeight;
+const STEP_LABEL = {
+  patch: "Writing a patch", feedback: "Reading the dependency evidence", baseline: "Learning what tests exercise",
+  graph: "Indexing the code graph", changes: "Mapping the diff", blast: "Walking dependents",
+  tests: "Running selected tests", selfcheck: "Re-checking its own test", verdict: "Wrapping up",
+};
+
+function diffCard(diff, onlyFiles) {
+  const files = parseDiff(diff);
+  return Object.entries(files).filter(([f]) => !onlyFiles || onlyFiles.has(f)).map(([f, hunks]) => `
+    <div class="dcard"><div class="dcard-head">${esc(f)}</div><div class="dcard-body">${
+      hunks.map((h) => h.lines.filter((l) => l.t !== " " || h.lines.length < 8).map((l) =>
+        `<div class="dl ${l.t === "+" ? "add" : l.t === "-" ? "del" : ""}"><span class="sg">${l.t === " " ? "" : l.t}</span>${highlight(l.text) || " "}</div>`
+      ).join("")).join('<div class="dl gap">⋯</div>')}</div></div>`).join("");
 }
 
-function renderDecision(v) {
-  const box = $("verdict");
-  const next = $("btn-next");
-  const approve = $("btn-approve");
-  if (!v) {
-    box.className = "verdict";
-    box.innerHTML = state.busy ? "<b>Working…</b>The agent is running." : "<b>No patch yet</b>Run the program, then describe what looks wrong.";
-    next.disabled = approve.disabled = true;
-    next.textContent = "↩ Send back to agent";
+function newFiles(i) {
+  // files whose change is new in this attempt (e.g. only the added tests), relative to the previous attempt
+  if (i === 0) return null;
+  const prev = parseDiff(state.attempts[i - 1].diff);
+  const cur = parseDiff(state.attempts[i].diff);
+  return new Set(Object.keys(cur).filter((f) => JSON.stringify(cur[f]) !== JSON.stringify(prev[f])));
+}
+
+function dependencyCard(a, i) {
+  const r = a.report;
+  const latest = i === state.attempts.length - 1;
+  const gaps = new Set(r.gaps);
+  const failed = r.tests.filter((t) => FAILED(t.status));
+  const added = r.tests.filter((t) => t.why.includes("added by patch"));
+  const deps = r.impacted.map((d) => `
+    <div class="dep ${gaps.has(d.id) ? "gap" : ""}"><span class="hops">${d.hops} hop${d.hops > 1 ? "s" : ""}</span>
+      <code>${esc(d.id)}</code>${gaps.has(d.id) ? '<span class="warn">no tests</span>' : `<span class="ok">${d.evidence.length} test${d.evidence.length === 1 ? "" : "s"}</span>`}</div>`).join("");
+  let action = "";
+  if (latest && !state.busy && r.verdict === "regression") action = `<button class="btn primary sm" data-act="revise">Fix it using this evidence</button>`;
+  if (latest && !state.busy && r.verdict === "unvalidated") action = `<button class="btn primary sm" data-act="cover">Write tests for ${esc(r.gaps.map((g) => g.split(".").pop() + "()").join(", "))}</button>`;
+  const summary = failed.length ? `${failed.map((t) => `<code>${esc(t.id.split(".").pop())}</code>`).join(", ")} failed: ${esc((failed[0].message || "").split("\n")[0])}`
+    : r.gaps.length ? `All ${r.tests.length} tests pass, but nothing tests ${r.gaps.map((g) => `<code>${esc(g)}</code>`).join(", ")}.`
+    : `All ${r.tests.length} tests pass${added.length ? ` (${added.length} new)` : ""}, and every affected function is covered.`;
+  return `<div class="card dep-card ${r.verdict}" data-i="${i}">
+    <div class="card-title"><span>Dependency check</span><span class="vchip ${r.verdict}">${CHIP[r.verdict]}</span></div>
+    <div class="dep-changed">changed <code>${r.changed.map((c) => esc(c.id)).join(", ")}</code></div>
+    ${deps || '<div class="dep">no other code depends on it</div>'}
+    <div class="dep-tests">${r.tests.length} tests run · ${r.tests.length - failed.length} passed${failed.length ? ` · <b class="bad">${failed.length} failed</b>` : ""}
+      <a class="view-graph" data-i="${i}">view graph</a></div>
+    <div class="dep-summary">${summary}</div>
+    ${action}
+  </div>`;
+}
+
+function renderChat() {
+  const chat = $("chat");
+  if (!state.request && !state.attempts.length) {
+    chat.innerHTML = `<div class="chat-empty">Run the program, then tell the agent what looks wrong.<br>
+      It fixes the code, then checks everything that depends on the change.</div>`;
     return;
   }
-  const r = v.r;
-  const latest = selected === state.attempts.length - 1;
-  if (state.approved && latest) {
-    box.className = "verdict approved";
-    box.innerHTML = "<b>Approved and applied</b>A human made the final call with the evidence above.";
-  } else {
-    const failed = r.tests.filter((t) => FAILED(t.status));
-    const direct = r.tests.filter((t) => t.scope === "direct");
-    let sub;
-    if (failed.length) {
-      sub = (direct.length && direct.every((t) => t.status === "passed") ? "The change's own test passes, but " : "") +
-        failed.map((t) => `<code>${esc(t.id)}</code> fails`).join(", ") + ".";
-    } else if (r.gaps.length) {
-      sub = `All ${r.tests.length} selected tests pass, but nothing tests ${r.gaps.map((g) => `<code>${esc(g)}</code>`).join(", ")}.`;
-    } else {
-      sub = `All ${r.tests.length} selected tests pass and cover every affected function.`;
-    }
-    box.className = `verdict ${r.verdict}`;
-    box.innerHTML = `<b>${VERDICT[r.verdict]}</b>${sub}`;
+  const parts = [`<div class="msg user">${esc(state.request)}</div>`];
+  state.attempts.forEach((a, i) => {
+    const intro = a.source === "tests" ? "I added tests for the code the check found untested:"
+      : a.source === "revision" ? "Revised using the failing tests and their dependency paths:" : "";
+    parts.push(`<div class="msg agent ${i === selected ? "selected" : ""}" data-i="${i}">
+      <div class="who">Agent · ${esc(state.model)}</div>
+      ${intro ? `<div class="intro">${intro}</div>` : ""}
+      <div class="expl">${esc(a.explanation)}</div>
+      ${diffCard(a.diff, newFiles(i))}
+    </div>`);
+    parts.push(dependencyCard(a, i));
+  });
+  if (state.busy) {
+    const cur = [...state.steps].reverse().find((s) => s.status === "running");
+    parts.push(`<div class="msg status"><span class="spin"></span>${esc(STEP_LABEL[cur?.key] || "Working")}…</div>`);
   }
-  next.dataset.action = r.verdict === "regression" ? "revise" : "cover";
-  next.textContent = r.verdict === "regression" ? "↩ Fix regression using graph evidence"
-    : r.verdict === "unvalidated" ? "↩ Write tests for untested code" : "↩ Send back to agent";
-  next.disabled = !latest || state.busy || state.approved || r.verdict === "validated";
-  approve.disabled = !latest || state.busy || state.approved;
-  approve.className = `btn ${r.verdict === "regression" ? "danger" : "approve"}`;
-  approve.textContent = r.verdict === "regression" ? (confirmApprove ? "Click again to confirm" : "Approve anyway") : "Approve & apply";
+  chat.innerHTML = parts.join("");
+  chat.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", () => act(b.dataset.act)));
+  chat.querySelectorAll(".msg.agent, .view-graph").forEach((el) => el.addEventListener("click", () => {
+    selected = +el.dataset.i;
+    if (el.classList.contains("view-graph")) panelTab = "graph";
+    $("graph").dataset.key = "";
+    render();
+  }));
+  chat.scrollTop = chat.scrollHeight;
 }
 
 function renderPanel(v) {
@@ -438,8 +446,7 @@ function renderGraph(v) {
 async function runProgram() {
   try {
     const res = await api("/api/run", {});
-    const label = state.approved ? "after approved fix" : runs.length ? "current code" : "before any change";
-    runs.push({ ...res.run, label });
+    runs.push(res.run);
     panelTab = "terminal";
     renderTerminal();
     render();
@@ -459,12 +466,6 @@ function renderTerminal() {
 $("btn-ask").addEventListener("click", () => act("ask", { request: $("request").value.trim() }));
 $("btn-run").addEventListener("click", runProgram);
 $("request").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("btn-ask").click(); } });
-$("btn-next").addEventListener("click", (e) => act(e.currentTarget.dataset.action));
-$("btn-approve").addEventListener("click", () => {
-  const v = view();
-  if (v.r.verdict === "regression" && !confirmApprove) { confirmApprove = true; return renderDecision(v); }
-  act("approve");
-});
 $("btn-reset").addEventListener("click", () => { runs.length = 0; $("terminal").innerHTML = '<div class="term-empty">Press ▶ Run to execute the program on the current code.</div>'; act("reset"); });
 document.querySelectorAll(".ptab").forEach((b) => b.addEventListener("click", () => {
   panelTab = b.dataset.tab;

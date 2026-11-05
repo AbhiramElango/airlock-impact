@@ -17,7 +17,7 @@ from ..agent.testwriter import TestWriter
 from ..runner import run_command
 from ..pipeline import ImpactAnalyzer
 from ..report import Report
-from ..workspace import IGNORE, apply_patch
+from ..workspace import IGNORE, apply_patch, scratch_copy
 
 STATIC = Path(__file__).resolve().parent / "static"
 TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}
@@ -73,7 +73,6 @@ class Session:
     steps: list[Step] = field(default_factory=list)
     busy: bool = False
     error: str = ""
-    approved: bool = False
 
 
 class ReviewApp:
@@ -90,7 +89,7 @@ class ReviewApp:
     def state(self) -> dict:
         s = self.session
         return {"repo": self.repo.name, "model": self.model, "store": self.store, "request": s.request,
-                "busy": s.busy, "error": s.error, "approved": s.approved,
+                "busy": s.busy, "error": s.error,
                 "run_cmd": " ".join(self.run_cmd), "can_reset": bool(self.seed),
                 "attempts": [a.to_dict() for a in s.attempts],
                 "steps": [{"attempt": st.attempt, "key": st.key, "label": st.label, "status": st.status,
@@ -116,8 +115,6 @@ class ReviewApp:
         }
         if action == "run":
             return self._run_program()
-        if action == "approve":
-            return self._approve()
         if action == "reset":
             return self._reset()
         if action not in jobs:
@@ -194,20 +191,15 @@ class ReviewApp:
         self._analyze("revision", proposal)
 
     def _run_program(self) -> dict:
-        """Runs the repo's own entry point (fixed command, never model-chosen) on the current code."""
-        out = run_command(self.repo, self.run_cmd)
-        return {**self.state(), "run": {"cmd": " ".join(self.run_cmd), **out}}
-
-    def _approve(self) -> dict:
-        with self.lock:
-            s = self.session
-            if s.busy or not s.attempts or s.approved:
-                raise ValueError("nothing to approve")
-            apply_patch(self.repo, s.attempts[-1].diff)
-            s.approved = True
-            s.steps.append(Step(len(s.attempts) - 1, "approve", "Human approved · patch applied to repo",
-                                "done", "", time.monotonic(), 0.0))
-        return self.state()
+        """Runs the repo's entry point (fixed command, never model-chosen) on the agent's latest patch,
+        in a sandbox; on the original code when there is no patch yet."""
+        root, label = self.repo, "original code"
+        if self.session.attempts:
+            root = scratch_copy(self.repo, "run")
+            apply_patch(root, self.session.attempts[-1].diff)
+            label = f"with the agent's patch (attempt {len(self.session.attempts)})"
+        out = run_command(root, self.run_cmd)
+        return {**self.state(), "run": {"cmd": " ".join(self.run_cmd), "label": label, **out}}
 
     def _reset(self) -> dict:
         with self.lock:
