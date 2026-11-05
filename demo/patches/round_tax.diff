@@ -1,0 +1,8 @@
+--- a/tax.py
++++ b/tax.py
+@@ -3,4 +3,4 @@ from settings import TAX_PERCENT
+ 
+ def add_tax(amount):
+     """Amount plus sales tax."""
+-    return amount * (1 + TAX_PERCENT)
++    return round(amount * (1 + TAX_PERCENT / 100))

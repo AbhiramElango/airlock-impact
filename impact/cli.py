@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from collections import Counter
 from pathlib import Path
 
@@ -29,6 +30,19 @@ def cmd_index(args) -> None:
         print("   ", u)
 
 
+def build_analyzer(store: str):
+    from .coverage_map import CoverageMapper
+    from .pipeline import ImpactAnalyzer
+    from .runner import PytestRunner
+    return ImpactAnalyzer(PythonParser(), lambda repo: make_store(store, repo), PytestRunner(), CoverageMapper())
+
+
+def cmd_analyze(args) -> None:
+    from .render_text import render
+    report = build_analyzer(args.store).analyze(Path(args.repo), Path(args.patch).read_text())
+    print(json.dumps(report.to_dict(), indent=2) if args.json else render(report))
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="impact")
     sub = p.add_subparsers(required=True)
@@ -36,6 +50,12 @@ def main() -> None:
     idx.add_argument("repo")
     idx.add_argument("--store", choices=["neo4j", "memory"], default="neo4j")
     idx.set_defaults(func=cmd_index)
+    ana = sub.add_parser("analyze", help="blast radius + validation for a proposed patch")
+    ana.add_argument("repo")
+    ana.add_argument("patch", help="unified diff file")
+    ana.add_argument("--store", choices=["neo4j", "memory"], default="neo4j")
+    ana.add_argument("--json", action="store_true")
+    ana.set_defaults(func=cmd_analyze)
     args = p.parse_args()
     args.func(args)
 
