@@ -6,11 +6,11 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .changes import changed_symbols
-from .coverage_map import CoverageMapper, add_covers
+from .coverage_map import add_covers
 from .model import CodeGraph, Kind, Rel
-from .ports import GraphStore, LanguageParser
+from .ports import EvidenceProvider, GraphStore, LanguageParser, TestRunner
 from .report import ImpactRef, Report, SymbolRef, TestRun
-from .runner import PytestRunner, nodeid
+from .runner import nodeid
 from .workspace import apply_patch, scratch_copy
 
 MAX_HOPS = 8
@@ -18,7 +18,7 @@ MAX_HOPS = 8
 
 class ImpactAnalyzer:
     def __init__(self, parser: LanguageParser, store_for: Callable[[str], GraphStore],
-                 runner: PytestRunner, coverage: CoverageMapper, max_hops: int = MAX_HOPS):
+                 runner: TestRunner, coverage: EvidenceProvider, max_hops: int = MAX_HOPS):
         self.parser, self.store_for = parser, store_for
         self.runner, self.coverage, self.max_hops = runner, coverage, max_hops
         self._covers: dict[Path, set[tuple[str, str]]] = {}

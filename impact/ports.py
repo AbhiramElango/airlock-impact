@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from .model import CodeGraph, Impact
+from .model import CodeGraph, Impact, TestOutcome
 
 
 class LanguageParser(Protocol):
@@ -15,3 +15,12 @@ class LanguageParser(Protocol):
 class GraphStore(Protocol):
     def save(self, graph: CodeGraph) -> None: ...
     def dependents(self, ids: list[str], max_hops: int) -> list[Impact]: ...
+
+
+class TestRunner(Protocol):
+    def run(self, root: Path, nodeids: list[str]) -> dict[str, TestOutcome]: ...
+
+
+class EvidenceProvider(Protocol):
+    """Runtime evidence: which test executed which symbol."""
+    def covers(self, root: Path, graph: CodeGraph) -> set[tuple[str, str]]: ...

@@ -76,3 +76,9 @@ class Impact:
     id: str
     hops: int
     path: tuple[str, ...]  # dependent -> ... -> changed symbol
+
+
+@dataclass(frozen=True)
+class TestOutcome:
+    status: str  # passed | failed | error | skipped
+    message: str = ""

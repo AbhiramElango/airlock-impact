@@ -6,16 +6,11 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
 from pathlib import Path
 
+from .model import TestOutcome
+
 ENV_KEEP = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
-
-
-@dataclass(frozen=True)
-class TestOutcome:
-    status: str  # passed | failed | error | skipped
-    message: str = ""
 
 
 def scrubbed_env() -> dict[str, str]:
