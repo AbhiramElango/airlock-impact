@@ -561,7 +561,7 @@ function renderGraph(v, animate = false) {
     layout: { name: "dagre", rankDir: "LR", nodeSep: 14, rankSep: 60, fit: false },
     style: [
       { selector: "node", style: { label: "data(label)", "font-family": "JetBrains Mono, SF Mono, Menlo, monospace",
-        "font-size": 12, color: "#1f2330", "text-valign": "center", "background-color": "#fff", "border-width": 1.5,
+        "font-size": 13, color: "#1f2330", "text-valign": "center", "background-color": "#fff", "border-width": 1.5,
         "border-color": "#d5d7e2", shape: "round-rectangle", width: "label", height: 28, padding: 10 } },
       { selector: "node.Variable", style: { shape: "hexagon" } },
       { selector: "node.Test", style: { shape: "round-tag" } },
