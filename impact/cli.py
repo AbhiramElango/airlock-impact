@@ -44,6 +44,16 @@ def cmd_analyze(args) -> None:
     print(json.dumps(report.to_dict(), indent=2) if args.json else render(report))
 
 
+def cmd_serve(args) -> None:
+    from .agent.fixer import Fixer
+    from .agent.ollama import OllamaClient
+    from .web.server import ReviewApp, serve
+    app = ReviewApp(Path(args.repo).resolve(), Path(args.seed).resolve() if args.seed else None,
+                    build_analyzer(args.store, args.max_hops), Fixer(OllamaClient(args.model)),
+                    Path(args.simulate).resolve() if args.simulate else None, args.model)
+    serve(app, args.port)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="impact")
     sub = p.add_subparsers(required=True)
@@ -58,6 +68,15 @@ def main() -> None:
     ana.add_argument("--json", action="store_true")
     ana.add_argument("--max-hops", type=int, default=8, help="how far to follow dependents (default 8)")
     ana.set_defaults(func=cmd_analyze)
+    srv = sub.add_parser("serve", help="Impact Review web UI")
+    srv.add_argument("--repo", default="demo/work/restaurant", help="repo under review (patches are applied here on approve)")
+    srv.add_argument("--seed", default="demo/restaurant", help="pristine copy used by Reset; '' to disable")
+    srv.add_argument("--simulate", default="demo/patches/round_tax.diff", help="patch for 'simulate bad fix'")
+    srv.add_argument("--model", default="qwen3.5:9b")
+    srv.add_argument("--store", choices=["neo4j", "memory"], default="neo4j")
+    srv.add_argument("--max-hops", type=int, default=8)
+    srv.add_argument("--port", type=int, default=8090)
+    srv.set_defaults(func=cmd_serve)
     args = p.parse_args()
     args.func(args)
 

@@ -14,6 +14,7 @@ from .runner import nodeid
 from .workspace import apply_patch, scratch_copy
 
 MAX_HOPS = 8
+UI_FULL_GRAPH_LIMIT = 80
 
 
 class ImpactAnalyzer:
@@ -47,9 +48,10 @@ class ImpactAnalyzer:
 
         tests = self._select_tests(graph, changed_ids, impacted, covers)
         outcomes = self.runner.run(work, [tests[t]["nodeid"] for t in tests])
+        paths = {i.id: list(i.path) for i in impacted}
         runs = [TestRun(t, info["nodeid"], info["scope"], sorted(info["why"]),
-                        outcomes.get(t).status if t in outcomes else "not_run",
-                        outcomes.get(t).message if t in outcomes else "")
+                        outcomes[t].status if t in outcomes else "not_run",
+                        outcomes[t].message if t in outcomes else "", paths.get(t, []))
                 for t, info in sorted(tests.items(), key=lambda kv: (kv[1]["scope"] != "direct", kv[0]))]
 
         evidence = self._evidence(graph, impacted, covers)
@@ -65,7 +67,7 @@ class ImpactAnalyzer:
             tests=runs,
             gaps=gaps,
             unresolved=graph.unresolved,
-            graph=self._ui_graph(graph),
+            graph=self._ui_graph(graph, set(symbols) | set(tests)),
         )
 
     def _select_tests(self, graph: CodeGraph, changed: list[str], impacted, covers) -> dict[str, dict]:
@@ -102,10 +104,14 @@ class ImpactAnalyzer:
         return {k: sorted(v) for k, v in ev.items()}
 
     @staticmethod
-    def _ui_graph(graph: CodeGraph) -> dict:
-        return {"nodes": [{**asdict(n), "kind": str(n.kind)} for n in graph.nodes.values() if n.kind != Kind.FILE],
+    def _ui_graph(graph: CodeGraph, relevant: set[str]) -> dict:
+        """Small repos: everything (unaffected code shown faded). Large repos: only the affected subgraph."""
+        symbols = [n for n in graph.nodes.values() if n.kind != Kind.FILE]
+        keep = {n.id for n in symbols} if len(symbols) <= UI_FULL_GRAPH_LIMIT else relevant
+        return {"nodes": [{**asdict(n), "kind": str(n.kind)} for n in symbols if n.id in keep],
                 "edges": [{"src": e.src, "dst": e.dst, "rel": str(e.rel), "source": e.source}
-                          for e in graph.edges if e.rel in (Rel.CALLS, Rel.READS, Rel.COVERS)]}
+                          for e in graph.edges
+                          if e.rel in (Rel.CALLS, Rel.READS) and e.src in keep and e.dst in keep]}
 
 
 def _is_unit_test(test_id: str, changed: list[str], covers) -> bool:

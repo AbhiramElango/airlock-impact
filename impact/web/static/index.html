@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Airlock Impact · Review</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/vendor/cytoscape.min.js"></script>
+  <script src="/vendor/dagre.min.js"></script>
+  <script src="/vendor/cytoscape-dagre.js"></script>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="logo">◆</div>
+    <div>
+      <h1>Airlock Impact</h1>
+      <p>What did the AI's patch affect, and what has actually been tested?</p>
+    </div>
+  </div>
+  <div class="badges">
+    <span class="badge" id="badge-model">model</span>
+    <span class="badge ok">offline · local</span>
+    <span class="badge" id="badge-repo">repo</span>
+    <button class="ghost" id="btn-reset" title="Restore the demo repo">↺ Reset</button>
+  </div>
+</header>
+
+<section class="ask">
+  <input id="request" placeholder="Describe the bug, e.g. “The receipt total is way too high.”"
+         value="The receipt total is way too high.">
+  <button class="primary" id="btn-ask">Ask agent</button>
+  <button class="secondary" id="btn-simulate" title="Load a plausible-looking bad fix to see Impact catch it">
+    Simulate a plausible bad fix</button>
+</section>
+
+<nav id="timeline"></nav>
+
+<section id="verdict" class="verdict idle">
+  <div class="verdict-title">No patch yet</div>
+  <div class="verdict-sub">Ask the local agent for a fix, or simulate a bad one.</div>
+</section>
+
+<main>
+  <article class="card">
+    <h2>Proposed patch</h2>
+    <p id="explanation" class="muted"></p>
+    <pre id="diff" class="diff"></pre>
+  </article>
+
+  <article class="card graph-card">
+    <div class="card-head">
+      <h2>Blast radius</h2>
+      <a href="http://localhost:7474" target="_blank" class="link">Open in Neo4j ↗</a>
+    </div>
+    <div id="graph"></div>
+    <div class="legend">
+      <span><i class="dot changed"></i>changed</span>
+      <span><i class="dot impacted"></i>affected</span>
+      <span><i class="dot pass"></i>test passed</span>
+      <span><i class="dot fail"></i>test failed</span>
+      <span><i class="dot gap"></i>no tests</span>
+      <span><i class="line calls"></i>calls</span>
+      <span><i class="line reads"></i>reads</span>
+    </div>
+    <div id="node-info" class="muted">Click a node for details.</div>
+  </article>
+
+  <article class="card">
+    <h2>Evidence</h2>
+    <div id="tests"></div>
+    <div id="gaps"></div>
+    <div id="impacted"></div>
+  </article>
+</main>
+
+<footer class="actions">
+  <span id="action-hint" class="muted"></span>
+  <button class="secondary" id="btn-revise" disabled>↩ Send back to agent</button>
+  <button class="approve" id="btn-approve" disabled>Approve &amp; apply</button>
+</footer>
+
+<div id="busy" class="busy hidden"><div class="spinner"></div><div id="busy-text">Working…</div></div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

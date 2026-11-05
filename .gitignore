@@ -5,3 +5,4 @@ __pycache__/
 .coverage*
 runs/
 LEARNINGS.md
+demo/work/

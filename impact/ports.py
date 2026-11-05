@@ -24,3 +24,7 @@ class TestRunner(Protocol):
 class EvidenceProvider(Protocol):
     """Runtime evidence: which test executed which symbol."""
     def covers(self, root: Path, graph: CodeGraph) -> set[tuple[str, str]]: ...
+
+
+class LLM(Protocol):
+    def complete(self, prompt: str) -> str: ...

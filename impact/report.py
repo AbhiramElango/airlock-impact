@@ -29,6 +29,7 @@ class TestRun:
     why: list[str]  # static | runtime
     status: str
     message: str = ""
+    path: list[str] = field(default_factory=list)  # static dependency chain test -> ... -> change
 
 
 @dataclass
