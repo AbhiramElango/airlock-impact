@@ -8,4 +8,4 @@ services:
     volumes: [airlock-neo4j-data:/data]
 volumes:
   airlock-neo4j-data:
-    external: true
+    name: airlock-neo4j-data
