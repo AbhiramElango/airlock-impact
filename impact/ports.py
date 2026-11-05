@@ -28,3 +28,17 @@ class EvidenceProvider(Protocol):
 
 class LLM(Protocol):
     def complete(self, prompt: str) -> str: ...
+
+
+class Progress(Protocol):
+    """Observer for pipeline steps, so a UI can show work as it happens."""
+    def start(self, key: str, label: str) -> None: ...
+    def done(self, key: str, detail: str = "", ok: bool = True) -> None: ...
+
+
+class NoProgress:
+    def start(self, key: str, label: str) -> None:
+        pass
+
+    def done(self, key: str, detail: str = "", ok: bool = True) -> None:
+        pass

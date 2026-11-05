@@ -50,7 +50,7 @@ def cmd_serve(args) -> None:
     from .web.server import ReviewApp, serve
     app = ReviewApp(Path(args.repo).resolve(), Path(args.seed).resolve() if args.seed else None,
                     build_analyzer(args.store, args.max_hops), Fixer(OllamaClient(args.model)),
-                    Path(args.simulate).resolve() if args.simulate else None, args.model)
+                    Path(args.simulate).resolve() if args.simulate else None, args.model, args.store)
     serve(app, args.port)
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from .changes import changed_symbols
 from .coverage_map import add_covers
 from .model import CodeGraph, Kind, Rel
-from .ports import EvidenceProvider, GraphStore, LanguageParser, TestRunner
+from .ports import EvidenceProvider, GraphStore, LanguageParser, NoProgress, Progress, TestRunner
 from .report import ImpactRef, Report, SymbolRef, TestRun
 from .runner import nodeid
 from .workspace import apply_patch, scratch_copy
@@ -24,39 +24,54 @@ class ImpactAnalyzer:
         self.runner, self.coverage, self.max_hops = runner, coverage, max_hops
         self._covers: dict[Path, set[tuple[str, str]]] = {}
 
-    def baseline_covers(self, repo: Path) -> set[tuple[str, str]]:
+    def baseline_covers(self, repo: Path, progress: Progress) -> set[tuple[str, str]]:
         """Which test executes which symbol on the unpatched code. Cached per repo."""
-        if repo not in self._covers:
+        progress.start("baseline", "Learn what the existing tests exercise")
+        cached = repo in self._covers
+        if not cached:
             base = scratch_copy(repo, "base")
             self._covers[repo] = self.coverage.covers(base, self.parser.parse(base))
-        return self._covers[repo]
+        pairs = self._covers[repo]
+        progress.done("baseline", f"{len(pairs)} test→function links observed" + (" (cached)" if cached else ""))
+        return pairs
 
-    def analyze(self, repo: Path, diff: str) -> Report:
+    def analyze(self, repo: Path, diff: str, progress: Progress = NoProgress()) -> Report:
         repo = repo.resolve()
-        covers = self.baseline_covers(repo)
+        covers = self.baseline_covers(repo, progress)
 
+        progress.start("graph", "Apply patch in a sandbox and index the code graph")
         work = scratch_copy(repo, "patched")
         apply_patch(work, diff)
         graph = self.parser.parse(work)
         add_covers(graph, covers)
         store = self.store_for(repo.name)
         store.save(graph)
+        progress.done("graph", f"{len(graph.nodes)} nodes · {len(graph.edges)} edges → {type(store).__name__}")
 
+        progress.start("changes", "Map the diff to changed symbols")
         changed = changed_symbols(diff, graph)
         changed_ids = [n.id for n in changed]
+        progress.done("changes", ", ".join(changed_ids) or "no symbols")
+
+        progress.start("blast", "Walk dependents backwards (blast radius)")
         impacted = store.dependents(changed_ids, self.max_hops)
+        code = [i for i in impacted if graph.nodes[i.id].kind != Kind.TEST]
+        progress.done("blast", f"{len(code)} dependent symbols, up to {max((i.hops for i in code), default=0)} hops")
 
         tests = self._select_tests(graph, changed_ids, impacted, covers)
+        progress.start("tests", f"Run {len(tests)} selected tests in the sandbox")
         outcomes = self.runner.run(work, [tests[t]["nodeid"] for t in tests])
         paths = {i.id: list(i.path) for i in impacted}
         runs = [TestRun(t, info["nodeid"], info["scope"], sorted(info["why"]),
                         outcomes[t].status if t in outcomes else "not_run",
                         outcomes[t].message if t in outcomes else "", paths.get(t, []))
                 for t, info in sorted(tests.items(), key=lambda kv: (kv[1]["scope"] != "direct", kv[0]))]
+        failed = sum(r.status in ("failed", "error") for r in runs)
+        progress.done("tests", f"{len(runs) - failed} passed · {failed} failed", ok=not failed)
 
         evidence = self._evidence(graph, impacted, covers)
         impacted_refs = [ImpactRef(i.id, str(graph.nodes[i.id].kind), i.hops, list(i.path), evidence.get(i.id, []))
-                         for i in impacted if graph.nodes[i.id].kind != Kind.TEST]
+                         for i in code]
         symbols = changed_ids + [i.id for i in impacted_refs]
         gaps = [s for s in symbols if not evidence.get(s) and graph.nodes[s].kind == Kind.FUNCTION]
 
@@ -68,6 +83,7 @@ class ImpactAnalyzer:
             gaps=gaps,
             unresolved=graph.unresolved,
             graph=self._ui_graph(graph, set(symbols) | set(tests)),
+            evidence={s: evidence.get(s, []) for s in symbols},
         )
 
     def _select_tests(self, graph: CodeGraph, changed: list[str], impacted, covers) -> dict[str, dict]:

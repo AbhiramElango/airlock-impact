@@ -2,19 +2,28 @@
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const ICON = { passed: "✅", failed: "❌", error: "❌", skipped: "⏭", not_run: "·" };
-const SOURCE = { agent: "agent", revision: "agent revision", simulated: "simulated bad fix" };
+const SOURCE = { agent: "agent", revision: "agent revision", simulated: "simulated" };
 const VERDICT = {
-  regression: "❌ Regression: do not approve",
-  unvalidated: "⚠️ Tests pass, but parts are untested",
-  validated: "✅ Validated: every affected function has passing tests",
+  regression: "Regression: do not approve",
+  unvalidated: "Passes, but parts are untested",
+  validated: "Validated",
 };
+const CHIP = { regression: "Regression", unvalidated: "Untested parts", validated: "Validated" };
+const FAILED = (s) => s === "failed" || s === "error";
 
 let state = null;
+let files = [];
 let selected = -1;
+const cache = {};
+let tabs = [];
+let active = null;
+let panelTab = "graph";
 let cy = null;
+let polling = false;
+let seenAttempts = 0;
 let confirmApprove = false;
 
+// ---------- data ----------
 async function api(path, body) {
   const res = await fetch(path, body === undefined ? {} : {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -24,21 +33,6 @@ async function api(path, body) {
   return data;
 }
 
-async function run(label, path, body) {
-  $("busy-text").textContent = label;
-  $("busy").classList.remove("hidden");
-  try {
-    state = await api(path, body);
-    selected = state.attempts.length - 1;
-    confirmApprove = false;
-    render();
-  } catch (e) {
-    toast(e.message);
-  } finally {
-    $("busy").classList.add("hidden");
-  }
-}
-
 function toast(msg) {
   const t = $("toast");
   t.textContent = msg;
@@ -46,208 +40,416 @@ function toast(msg) {
   setTimeout(() => t.classList.add("hidden"), 5000);
 }
 
-
-function render() {
-  $("badge-model").textContent = state.model;
-  $("badge-repo").textContent = `repo: ${state.repo}`;
-  $("btn-reset").classList.toggle("hidden", !state.can_reset);
-  $("btn-simulate").classList.toggle("hidden", !state.can_simulate);
-  renderTimeline();
-  const attempt = state.attempts[selected];
-  if (!attempt) return renderEmpty();
-  renderVerdict(attempt.report);
-  renderPatch(attempt);
-  renderEvidence(attempt.report);
-  renderGraph(attempt.report);
-  renderActions(attempt.report);
+async function act(action, body = {}) {
+  try {
+    confirmApprove = false;
+    state = await api(`/api/${action}`, body);
+    if (action === "reset" || action === "approve") Object.keys(cache).forEach((k) => delete cache[k]);
+    if (action === "reset") { tabs = []; active = null; seenAttempts = 0; selected = -1; }
+    if (action === "approve" && active) await openFile(active);
+    onState();
+    if (state.busy) poll();
+  } catch (e) { toast(e.message); }
 }
 
-function renderEmpty() {
-  $("verdict").className = "verdict idle";
-  $("verdict").innerHTML = `<div class="verdict-title">No patch yet</div>
-    <div class="verdict-sub">Ask the local agent for a fix, or simulate a bad one.</div>`;
-  ["explanation", "diff", "tests", "gaps", "impacted"].forEach((id) => ($(id).innerHTML = ""));
-  if (cy) { cy.destroy(); cy = null; }
-  $("btn-revise").disabled = $("btn-approve").disabled = true;
-  $("action-hint").textContent = "";
-}
-
-function renderTimeline() {
-  $("timeline").innerHTML = state.attempts.map((a, i) => {
-    const v = a.report.verdict;
-    const icon = v === "regression" ? "❌" : v === "unvalidated" ? "⚠️" : "✅";
-    const step = `<span class="step ${i === selected ? "active" : ""}" data-i="${i}">
-      Attempt ${i + 1} · ${esc(SOURCE[a.source])} · ${icon}</span>`;
-    return (i ? `<span class="step-arrow">→</span>` : "") + step;
-  }).join("") + (state.approved ? `<span class="step-arrow">→</span><span class="step active">Approved ✓</span>` : "");
-  document.querySelectorAll(".step[data-i]").forEach((el) =>
-    el.addEventListener("click", () => { selected = +el.dataset.i; render(); }));
-}
-
-function renderVerdict(r) {
-  const v = $("verdict");
-  if (state.approved && selected === state.attempts.length - 1) {
-    v.className = "verdict approved";
-    v.innerHTML = `<div class="verdict-title">✓ Approved and applied to ${esc(state.repo)}</div>
-      <div class="verdict-sub">A human made the final call, with the evidence above.</div>`;
-    return;
+async function poll() {
+  if (polling) return;
+  polling = true;
+  while (true) {
+    await new Promise((r) => setTimeout(r, 350));
+    try { state = await api("/api/state"); } catch (e) { toast(e.message); break; }
+    onState();
+    if (!state.busy) break;
   }
-  const direct = r.tests.filter((t) => t.scope === "direct");
-  const failed = r.tests.filter((t) => t.status === "failed" || t.status === "error");
-  let sub;
-  if (failed.length) {
-    const own = direct.length && direct.every((t) => t.status === "passed");
-    sub = (own ? "The change's own test passes. " : "") +
-      `${failed.length === 1 ? "A downstream test fails" : failed.length + " tests fail"}: ` +
-      failed.map((t) => `<code>${esc(t.id)}</code> (${esc((t.message || "").split("\n")[0])})`).join(", ");
-  } else if (r.gaps.length) {
-    sub = `${r.tests.length} selected tests pass, but no test exercises ` +
-      r.gaps.map((g) => `<code>${esc(g)}</code>`).join(", ") + ". Passing tests are not proof of safety.";
-  } else {
-    sub = `${r.tests.length} selected tests pass and cover every affected function.`;
+  polling = false;
+  if (state.error) toast(state.error);
+}
+
+function onState() {
+  if (state.attempts.length !== seenAttempts) {
+    seenAttempts = state.attempts.length;
+    selected = seenAttempts - 1;
+    if (selected >= 0) autoOpen();
   }
-  v.className = `verdict ${r.verdict}`;
-  v.innerHTML = `<div class="verdict-title">${VERDICT[r.verdict]}</div><div class="verdict-sub">${sub}</div>`;
+  render();
 }
 
-function renderPatch(a) {
-  $("explanation").textContent = a.explanation || "";
-  $("diff").innerHTML = a.diff.split("\n").map((l) => {
-    const cls = l.startsWith("+++") || l.startsWith("---") ? "meta" : l.startsWith("@@") ? "hunk"
-      : l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : "";
-    return cls ? `<span class="${cls}">${esc(l)}</span>` : esc(l) + "\n";
-  }).join("");
-}
-
-function renderEvidence(r) {
-  $("tests").innerHTML = `<div class="section-title">Tests run (${r.tests.length})</div>` + (r.tests.map((t) => `
-    <div class="test">
-      <div class="test-row">
-        <span>${ICON[t.status] || "?"}</span>
-        <span class="test-name">${esc(t.id)}</span>
-        <span class="pill ${t.scope}">${t.scope}</span>
-      </div>
-      <div class="path">via ${esc(t.why.join(" + "))}${t.path.length ? " · " + t.path.map(esc).join(" → ") : ""}</div>
-      ${t.status === "failed" || t.status === "error" ? `<div class="failmsg">${esc((t.message || "").split("\n")[0])}</div>` : ""}
-    </div>`).join("") || `<div class="muted">No tests reach the changed code.</div>`);
-
-  $("gaps").innerHTML = r.gaps.length ? `<div class="section-title">No test evidence</div>` +
-    r.gaps.map((g) => `<div class="gap-item">⚠️ ${esc(g)}</div>`).join("") : "";
-
-  $("impacted").innerHTML = `<div class="section-title">Changed → dependents</div>` +
-    r.changed.map((c) => `<div class="hop-item"><span class="hop">changed</span>${esc(c.id)} <span class="muted">${esc(c.file)}:${c.line}</span></div>`).join("") +
-    r.impacted.map((i) => `<div class="hop-item"><span class="hop">${i.hops} hop${i.hops > 1 ? "s" : ""}</span>${esc(i.id)}</div>`).join("") +
-    (r.unresolved.length ? `<div class="section-title">Unresolved calls (${r.unresolved.length})</div>` +
-      r.unresolved.slice(0, 8).map((u) => `<div class="hop-item muted">? ${esc(u)}</div>`).join("") : "");
-}
-
-function nodeClasses(r) {
-  const changed = new Set(r.changed.map((c) => c.id));
-  const impacted = new Set(r.impacted.map((i) => i.id));
-  const gaps = new Set(r.gaps);
-  const tests = Object.fromEntries(r.tests.map((t) => [t.id, t.status]));
-  return (id) => {
-    const cls = [];
-    if (changed.has(id)) cls.push("changed");
-    else if (impacted.has(id)) cls.push("impacted");
-    if (gaps.has(id)) cls.push("gap");
-    if (id in tests) cls.push(tests[id] === "passed" ? "pass" : tests[id] === "not_run" ? "" : "fail");
-    if (!cls.filter(Boolean).length) cls.push("faded");
-    return cls.join(" ");
+// ---------- report helpers ----------
+function view() {
+  const a = state.attempts[selected];
+  if (!a) return null;
+  const r = a.report;
+  return {
+    a, r,
+    nodes: Object.fromEntries(r.graph.nodes.map((n) => [n.id, n])),
+    tests: Object.fromEntries(r.tests.map((t) => [t.id, t])),
+    changed: new Set(r.changed.map((c) => c.id)),
+    impacted: Object.fromEntries(r.impacted.map((i) => [i.id, i])),
+    gaps: new Set(r.gaps),
+    hunks: parseDiff(a.diff),
   };
 }
 
-function hotEdges(r) {
-  const hot = new Set();
-  r.tests.filter((t) => t.status === "failed" || t.status === "error").forEach((t) => {
-    for (let i = 0; i < t.path.length - 1; i++) hot.add(`${t.path[i]}>${t.path[i + 1]}`);
-  });
-  return hot;
+function parseDiff(diff) {
+  const out = {};
+  let file = null;
+  let hunk = null;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++ ")) { file = line.slice(4).replace(/^b\//, ""); out[file] = []; continue; }
+    if (line.startsWith("--- ")) continue;
+    const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)/);
+    if (m && file) { hunk = { oldStart: +m[1], lines: [] }; out[file].push(hunk); continue; }
+    if (hunk && /^[ +-]/.test(line)) hunk.lines.push({ t: line[0], text: line.slice(1) });
+  }
+  return out;
 }
 
-function renderGraph(r) {
-  const cls = nodeClasses(r);
-  const hot = hotEdges(r);
-  const elements = [
-    ...r.graph.nodes.map((n) => ({
-      data: { id: n.id, label: n.kind === "Test" ? n.name : n.id, kind: n.kind, file: n.file, line: n.start },
-      classes: `${n.kind} ${cls(n.id)}`,
-    })),
-    ...r.graph.edges.map((e) => ({
-      data: { id: `${e.src}>${e.dst}`, source: e.src, target: e.dst, rel: e.rel },
-      classes: `${e.rel} ${hot.has(`${e.src}>${e.dst}`) ? "hot" : ""}`,
-    })),
-  ];
+function fileStatus(v, file) {
+  if (!v) return {};
+  const inFile = Object.values(v.nodes).filter((n) => n.file === file);
+  const tests = inFile.map((n) => v.tests[n.id]).filter(Boolean);
+  return {
+    changed: file in v.hunks,
+    impacted: inFile.some((n) => n.id in v.impacted),
+    fail: tests.some((t) => FAILED(t.status)),
+    pass: tests.length > 0 && tests.every((t) => t.status === "passed"),
+  };
+}
+
+function autoOpen() {
+  const v = view();
+  const changedFiles = Object.keys(v.hunks);
+  const failing = v.r.tests.filter((t) => FAILED(t.status)).map((t) => v.nodes[t.id]?.file).filter(Boolean);
+  [...changedFiles, ...failing].forEach((f) => { if (!tabs.includes(f)) tabs.push(f); });
+  failing.forEach((f) => { if (!(f in cache)) api(`/api/file?path=${encodeURIComponent(f)}`).then((d) => { cache[f] = d.text; }); });
+  if (changedFiles.length) openFile(changedFiles[0], v.r.changed[0]?.line);
+}
+
+// ---------- render ----------
+function render() {
+  $("crumb-repo").textContent = state.repo;
+  $("tree-root").textContent = state.repo;
+  $("pill-model").textContent = state.model;
+  $("pill-store").textContent = `graph: ${state.store}`;
+  $("btn-reset").classList.toggle("hidden", !state.can_reset);
+  $("btn-simulate").classList.toggle("hidden", !state.can_simulate);
+  $("btn-ask").disabled = $("btn-simulate").disabled = state.busy;
+  const v = view();
+  renderTree(v);
+  renderTabs(v);
+  renderEditor(v);
+  renderRun();
+  renderDecision(v);
+  renderPanel(v);
+}
+
+function badgesFor(s, compact) {
+  return [s.changed && `<span class="badge b-changed">M</span>`,
+    s.impacted && !s.changed && `<span class="badge b-impacted">◐</span>`,
+    s.fail && `<span class="badge b-fail">✕</span>`,
+    !compact && s.pass && `<span class="badge b-pass">✓</span>`].filter(Boolean).join("");
+}
+
+function renderTree(v) {
+  $("tree").innerHTML = files.map((f) => {
+    const badges = badgesFor(fileStatus(v, f));
+    return `<div class="file ${f === active ? "active" : ""} ${v && !badges ? "dim" : ""}" data-f="${esc(f)}">
+      <span class="name">${esc(f)}</span>${badges}</div>`;
+  }).join("");
+  document.querySelectorAll(".file").forEach((el) => el.addEventListener("click", () => openFile(el.dataset.f)));
+}
+
+function renderTabs(v) {
+  $("editor-tabs").innerHTML = tabs.map((f) => `<div class="tab ${f === active ? "active" : ""}" data-f="${esc(f)}">
+      ${esc(f)} ${badgesFor(fileStatus(v, f), true)}<span class="x" data-x="${esc(f)}">×</span></div>`).join("");
+  document.querySelectorAll(".tab").forEach((el) => el.addEventListener("click", (e) => {
+    const closing = e.target.dataset.x;
+    if (closing) {
+      tabs = tabs.filter((t) => t !== closing);
+      if (active === closing) active = tabs[tabs.length - 1] || null;
+      return render();
+    }
+    openFile(el.dataset.f);
+  }));
+}
+
+async function openFile(file, line) {
+  if (!(file in cache)) {
+    try { cache[file] = (await api(`/api/file?path=${encodeURIComponent(file)}`)).text; } catch (e) { return toast(e.message); }
+  }
+  if (!tabs.includes(file)) tabs.push(file);
+  active = file;
+  render();
+  if (line) {
+    const row = document.querySelector(`.ln[data-n="${line}"]`);
+    if (row) { row.scrollIntoView({ block: "center" }); row.classList.add("flash"); }
+  }
+}
+
+const KW = "def|class|return|if|elif|else|for|in|while|import|from|as|with|try|except|finally|raise|not|and|or|is|None|True|False|lambda|yield|pass|break|continue|async|await";
+const TOKENS = new RegExp(`(?<f>(?<=\\bdef\\s+)\\w+)|(?<c>#.*$)|(?<s>f?"""[^]*?"""|f?'''[^]*?'''|f?"(?:\\\\.|[^"\\\\])*"|f?'(?:\\\\.|[^'\\\\])*')|(?<k>\\b(?:${KW})\\b)|(?<n>\\b\\d+(?:\\.\\d+)?\\b)|(?<b>\\b(?:print|sum|round|len|range|str|int|float|dict|list|self)\\b)`, "g");
+
+function highlight(line) {
+  let out = "";
+  let last = 0;
+  for (const m of line.matchAll(TOKENS)) {
+    out += esc(line.slice(last, m.index));
+    const kind = Object.entries(m.groups).find(([, val]) => val !== undefined)[0];
+    out += `<span class="tok-${kind}">${esc(m[0])}</span>`;
+    last = m.index + m[0].length;
+  }
+  return out + esc(line.slice(last));
+}
+
+function lensFor(v, node) {
+  const chips = [];
+  let range = "";
+  const evidence = (v.r.evidence[node.id] || []).map((t) => {
+    const st = v.tests[t]?.status;
+    return `<span class="chip ${FAILED(st) ? "fail" : st === "passed" ? "pass" : ""}">${FAILED(st) ? "✕" : "✓"} ${esc(t.split(".").pop())}</span>`;
+  });
+  if (v.changed.has(node.id)) {
+    chips.push(`<span class="chip changed">changed by patch</span>`);
+    range = "r-changed";
+  } else if (node.id in v.impacted) {
+    const hops = v.impacted[node.id].hops;
+    chips.push(`<span class="chip impacted">affected · ${hops} hop${hops > 1 ? "s" : ""} from change</span>`);
+    range = "r-impacted";
+  }
+  if (v.gaps.has(node.id)) chips.push(`<span class="chip gap">no test exercises this</span>`);
+  else if (evidence.length) chips.push("tested by", ...evidence);
+  const t = v.tests[node.id];
+  if (t) {
+    const bad = FAILED(t.status);
+    chips.push(`<span class="chip ${bad ? "fail" : "pass"}">${bad ? "✕ failed" : "✓ passed"}</span>`, `${t.scope} test`);
+    if (bad) chips.push(`<span style="color:var(--red)">${esc((t.message || "").split("\n")[0])}</span>`);
+    range = bad ? "r-fail" : "r-pass";
+  }
+  return chips.length ? { html: chips.join(" "), range } : null;
+}
+
+function diffRows(original, hunks) {
+  const rows = [];
+  let o = 1;
+  let n = 1;
+  const ctx = (text) => { rows.push({ t: " ", text, n: n++ }); o++; };
+  for (const h of hunks) {
+    while (o < h.oldStart) ctx(original[o - 1]);
+    for (const l of h.lines) {
+      if (l.t === " ") ctx(l.text);
+      else if (l.t === "-") { rows.push({ t: "-", text: l.text, n: null }); o++; }
+      else rows.push({ t: "+", text: l.text, n: n++ });
+    }
+  }
+  while (o <= original.length) ctx(original[o - 1]);
+  return rows;
+}
+
+function renderEditor(v) {
+  const ed = $("editor");
+  if (!active || !(active in cache)) {
+    ed.innerHTML = `<div class="empty-editor"><div class="empty-mark"></div>
+      <p>Ask the agent for a fix. Changed and affected files light up in the explorer.</p></div>`;
+    return;
+  }
+  const applied = state.approved && selected === state.attempts.length - 1;
+  const rows = diffRows(cache[active].replace(/\n$/, "").split("\n"), v && !applied ? (v.hunks[active] || []) : []);
+  const annotated = v ? Object.values(v.nodes)
+    .filter((nd) => nd.file === active && (nd.kind === "Function" || nd.kind === "Test"))
+    .map((nd) => ({ nd, lens: lensFor(v, nd) })).filter((x) => x.lens) : [];
+  const html = rows.map((row) => {
+    let pre = "";
+    const cls = [row.t === "+" ? "add" : row.t === "-" ? "del" : ""];
+    if (row.n) {
+      for (const { nd, lens } of annotated) {
+        if (nd.start === row.n) pre += `<div class="lens"><span class="no"></span><span class="body">${lens.html}</span></div>`;
+        if (row.n >= nd.start && row.n <= nd.end && lens.range) cls.push(lens.range);
+      }
+    }
+    return `${pre}<div class="ln ${cls.join(" ")}" ${row.n ? `data-n="${row.n}"` : ""}><span class="no">${row.n ?? ""}</span><span class="tx">${highlight(row.text) || " "}</span></div>`;
+  }).join("");
+  ed.innerHTML = `<div class="code">${html}</div>`;
+}
+
+function renderRun() {
+  const run = $("run");
+  if (!state.steps.length) {
+    run.innerHTML = `<div class="run-empty">The agent's work appears here step by step: patch → graph → blast radius → tests → verdict.</div>`;
+    return;
+  }
+  const groups = {};
+  state.steps.forEach((s) => (groups[s.attempt] ||= []).push(s));
+  run.innerHTML = Object.keys(groups).map(Number).sort((x, y) => x - y).map((i) => {
+    const a = state.attempts[i];
+    const head = a ? `<span>Attempt ${i + 1} <span class="src">· ${SOURCE[a.source]}</span></span>
+        <span class="vchip ${a.report.verdict}">${CHIP[a.report.verdict]}</span>`
+      : `<span>Attempt ${i + 1} <span class="src">· running…</span></span>`;
+    const steps = groups[i].map((s) => `
+      <div class="step ${s.status}">
+        <span class="ic">${s.status === "done" ? "✓" : s.status === "failed" ? "✕" : ""}</span>
+        <span class="lb">${esc(s.label)}</span>
+        <span class="sec">${s.seconds != null ? s.seconds.toFixed(1) + "s" : ""}</span>
+        ${s.detail ? `<span class="dt">${esc(s.detail)}</span>` : ""}
+      </div>`).join("");
+    return `<div class="attempt ${i === selected ? "selected" : ""}" data-i="${i}">
+      <div class="attempt-head">${head}</div>${steps}</div>`;
+  }).join("");
+  run.querySelectorAll(".attempt-head").forEach((el) => el.addEventListener("click", () => {
+    const i = +el.parentElement.dataset.i;
+    if (state.attempts[i]) { selected = i; $("graph").dataset.key = ""; render(); }
+  }));
+  run.scrollTop = run.scrollHeight;
+}
+
+function renderDecision(v) {
+  const box = $("verdict");
+  const revise = $("btn-revise");
+  const approve = $("btn-approve");
+  if (!v) {
+    box.className = "verdict";
+    box.innerHTML = state.busy ? "<b>Working…</b>The agent is running." : "<b>No patch yet</b>Ask the agent, or simulate a bad fix.";
+    revise.disabled = approve.disabled = true;
+    return;
+  }
+  const r = v.r;
+  const latest = selected === state.attempts.length - 1;
+  if (state.approved && latest) {
+    box.className = "verdict approved";
+    box.innerHTML = "<b>Approved and applied</b>A human made the final call with the evidence above.";
+  } else {
+    const failed = r.tests.filter((t) => FAILED(t.status));
+    const direct = r.tests.filter((t) => t.scope === "direct");
+    let sub;
+    if (failed.length) {
+      sub = (direct.length && direct.every((t) => t.status === "passed") ? "The change's own test passes, but " : "") +
+        failed.map((t) => `<code>${esc(t.id)}</code> fails`).join(", ") + ".";
+    } else if (r.gaps.length) {
+      sub = `All ${r.tests.length} selected tests pass, but nothing tests ${r.gaps.map((g) => `<code>${esc(g)}</code>`).join(", ")}.`;
+    } else {
+      sub = `All ${r.tests.length} selected tests pass and cover every affected function.`;
+    }
+    box.className = `verdict ${r.verdict}`;
+    box.innerHTML = `<b>${VERDICT[r.verdict]}</b>${sub}`;
+  }
+  revise.disabled = !latest || state.busy || state.approved || r.verdict === "validated";
+  approve.disabled = !latest || state.busy || state.approved;
+  approve.className = `btn ${r.verdict === "regression" ? "danger" : "approve"}`;
+  approve.textContent = r.verdict === "regression" ? (confirmApprove ? "Click again to confirm" : "Approve anyway") : "Approve & apply";
+}
+
+function renderPanel(v) {
+  document.querySelectorAll(".ptab").forEach((b) => b.classList.toggle("active", b.dataset.tab === panelTab));
+  ["graph", "tests", "report"].forEach((t) => $(t).classList.toggle("hidden", t !== panelTab));
+  $("graph-legend").classList.toggle("hidden", panelTab !== "graph");
+  $("tests-count").textContent = v ? `(${v.r.tests.length})` : "";
+  if (!v) {
+    if (cy) { cy.destroy(); cy = null; }
+    $("tests").innerHTML = $("report").innerHTML = "";
+    $("graph").dataset.key = "";
+    return;
+  }
+  renderTests(v);
+  renderReport(v);
+  const key = `${selected}:${state.attempts.length}`;
+  if (panelTab === "graph" && $("graph").dataset.key !== key) { $("graph").dataset.key = key; renderGraph(v); }
+}
+
+function renderTests(v) {
+  $("tests").innerHTML = v.r.tests.map((t) => `
+    <div class="trow" data-id="${esc(t.id)}">
+      <span>${FAILED(t.status) ? "❌" : t.status === "passed" ? "✅" : "·"}</span>
+      <span class="tn">${esc(t.id)}</span>
+      <span class="scope ${t.scope}">${t.scope}</span>
+      <span class="tp">found via ${esc(t.why.join(" + "))}${t.path.length ? " · " + t.path.map(esc).join(" → ") : ""}</span>
+      ${FAILED(t.status) ? `<span class="tm">${esc((t.message || "").split("\n")[0])}</span>` : ""}
+    </div>`).join("") || "<div>No tests reach the changed code.</div>";
+  $("tests").querySelectorAll(".trow").forEach((el) => el.addEventListener("click", () => {
+    const n = v.nodes[el.dataset.id];
+    if (n) openFile(n.file, n.start);
+  }));
+}
+
+function renderReport(v) {
+  const r = v.r;
+  const list = (items, empty) => items.join("") || `<div class="item">${empty}</div>`;
+  $("report").innerHTML = `<div class="rep">
+    <h4>Changed</h4>${list(r.changed.map((c) => `<div class="item"><span class="hop">changed</span>${esc(c.id)} <span style="color:var(--muted)">${esc(c.file)}:${c.line}</span></div>`), "none")}
+    <h4>Dependents (blast radius)</h4>${list(r.impacted.map((i) => `<div class="item"><span class="hop">${i.hops} hop${i.hops > 1 ? "s" : ""}</span>${i.path.map(esc).join(" → ")}</div>`), "none")}
+    <h4>No test evidence</h4>${list(r.gaps.map((g) => `<div class="item" style="color:var(--amber)">⚠ ${esc(g)}</div>`), "none")}
+    <h4>Unresolved calls</h4>${list(r.unresolved.map((u) => `<div class="item">? ${esc(u)}</div>`), "none: every call in the repo was resolved")}
+  </div>`;
+}
+
+function renderGraph(v) {
+  const r = v.r;
+  const hot = new Set();
+  r.tests.filter((t) => FAILED(t.status)).forEach((t) => {
+    for (let i = 0; i < t.path.length - 1; i++) hot.add(`${t.path[i]}>${t.path[i + 1]}`);
+  });
+  const cls = (id) => {
+    const c = [];
+    if (v.changed.has(id)) c.push("changed"); else if (id in v.impacted) c.push("impacted");
+    if (v.gaps.has(id)) c.push("gap");
+    if (v.tests[id]) c.push(FAILED(v.tests[id].status) ? "fail" : v.tests[id].status === "passed" ? "pass" : "");
+    return c.filter(Boolean).join(" ") || "faded";
+  };
   if (cy) cy.destroy();
   cy = cytoscape({
     container: $("graph"),
-    elements,
     wheelSensitivity: 0.2,
-    layout: { name: "dagre", rankDir: "LR", nodeSep: 18, rankSep: 70, fit: false },
+    elements: [
+      ...r.graph.nodes.map((n) => ({ data: { id: n.id, label: n.kind === "Test" ? n.name : n.id, file: n.file, line: n.start },
+        classes: `${n.kind} ${cls(n.id)}` })),
+      ...r.graph.edges.map((e) => ({ data: { id: `${e.src}>${e.dst}`, source: e.src, target: e.dst },
+        classes: `${e.rel} ${hot.has(`${e.src}>${e.dst}`) ? "hot" : ""}` })),
+    ],
+    layout: { name: "dagre", rankDir: "LR", nodeSep: 14, rankSep: 60, fit: false },
     style: [
-      { selector: "node", style: {
-        label: "data(label)", color: "#e6edf3", "font-size": 13, "text-valign": "center", "text-halign": "center",
-        "background-color": "#30363d", "border-width": 1, "border-color": "#484f58", shape: "round-rectangle",
-        width: "label", height: 30, padding: 10, "text-wrap": "none" } },
-      { selector: "node.Variable", style: { shape: "hexagon", padding: 10 } },
-      { selector: "node.Test", style: { shape: "round-tag", "background-color": "#21262d" } },
-      { selector: "node.impacted", style: { "background-color": "#5a3d10", "border-color": "#f0a73c", "border-width": 2 } },
-      { selector: "node.changed", style: { "background-color": "#6e1d1a", "border-color": "#f85149", "border-width": 3 } },
-      { selector: "node.pass", style: { "background-color": "#1a4224", "border-color": "#3fb950", "border-width": 2 } },
-      { selector: "node.fail", style: { "background-color": "#f85149", color: "#0d1117", "border-color": "#fff", "border-width": 3, "font-weight": 700 } },
-      { selector: "node.gap", style: { "border-style": "dashed", "border-color": "#c9d1d9", "border-width": 2 } },
-      { selector: "node.faded", style: { opacity: 0.28 } },
-      { selector: "edge", style: {
-        width: 1.4, "line-color": "#484f58", "target-arrow-color": "#484f58", "target-arrow-shape": "triangle",
-        "curve-style": "bezier", "arrow-scale": 0.8 } },
+      { selector: "node", style: { label: "data(label)", "font-family": "JetBrains Mono, SF Mono, Menlo, monospace",
+        "font-size": 12, color: "#1f2330", "text-valign": "center", "background-color": "#fff", "border-width": 1.5,
+        "border-color": "#d5d7e2", shape: "round-rectangle", width: "label", height: 28, padding: 10 } },
+      { selector: "node.Variable", style: { shape: "hexagon" } },
+      { selector: "node.Test", style: { shape: "round-tag" } },
+      { selector: "node.impacted", style: { "background-color": "#fff6e5", "border-color": "#e8900c", "border-width": 2 } },
+      { selector: "node.changed", style: { "background-color": "#5b39f3", color: "#fff", "border-color": "#2d1c77", "border-width": 2 } },
+      { selector: "node.pass", style: { "background-color": "#eaf8ef", "border-color": "#2f9e58", "border-width": 2 } },
+      { selector: "node.fail", style: { "background-color": "#e5484d", color: "#fff", "border-color": "#a3262a", "border-width": 2 } },
+      { selector: "node.gap", style: { "border-style": "dashed", "border-color": "#4a5065", "border-width": 2 } },
+      { selector: ".faded", style: { opacity: 0.22 } },
+      { selector: "edge", style: { width: 1.4, "line-color": "#c3c6d4", "target-arrow-color": "#c3c6d4",
+        "target-arrow-shape": "triangle", "curve-style": "bezier", "arrow-scale": 0.8 } },
       { selector: "edge.READS", style: { "line-style": "dotted" } },
-      { selector: "edge.faded", style: { opacity: 0.2 } },
-      { selector: "edge.hot", style: { width: 3.5, "line-color": "#f85149", "target-arrow-color": "#f85149" } },
+      { selector: "edge.hot", style: { width: 3.5, "line-color": "#e5484d", "target-arrow-color": "#e5484d" } },
     ],
   });
   cy.nodes(".faded").connectedEdges().addClass("faded");
   const focus = cy.nodes().not(".faded");
-  cy.fit(focus.length ? focus : undefined, 24);
-  if (cy.zoom() > 1.6) { cy.zoom(1.6); cy.center(focus); }
-  cy.on("tap", "node", (e) => {
-    const d = e.target.data();
-    const evidence = (r.impacted.find((i) => i.id === d.id) || {}).evidence || [];
-    $("node-info").innerHTML = `<b>${esc(d.id)}</b> · ${esc(d.kind)} · ${esc(d.file)}:${d.line}` +
-      (evidence.length ? `<br>tested by: ${evidence.map(esc).join(", ")}` : "");
-  });
+  cy.fit(focus.length ? focus : undefined, 28);
+  if (cy.zoom() > 1.4) { cy.zoom(1.4); cy.center(focus); }
+  cy.on("tap", "node", (e) => openFile(e.target.data("file"), e.target.data("line")));
 }
 
-function renderActions(r) {
-  const latest = selected === state.attempts.length - 1;
-  const done = state.approved;
-  $("btn-revise").disabled = !latest || done || r.verdict === "validated";
-  const approve = $("btn-approve");
-  approve.disabled = !latest || done;
-  approve.className = r.verdict === "regression" ? "danger" : "approve";
-  approve.textContent = r.verdict === "regression"
-    ? (confirmApprove ? "Click again to approve anyway" : "Approve anyway")
-    : "Approve & apply";
-  $("action-hint").textContent = done ? "Applied. Reset to run the demo again."
-    : !latest ? "Viewing an earlier attempt."
-    : r.verdict === "regression" ? "Send the failing evidence back to the local agent to revise."
-    : r.verdict === "unvalidated" ? "No regressions. Some affected code has no tests, so it's your call."
-    : "All affected code has passing tests.";
-}
-
-$("btn-ask").addEventListener("click", () => {
-  const request = $("request").value.trim();
-  if (request) run("Local model is writing a patch, then Impact checks it…", "/api/ask", { request });
-});
-$("request").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btn-ask").click(); });
-$("btn-simulate").addEventListener("click", () =>
-  run("Analyzing the simulated patch…", "/api/simulate", { request: $("request").value.trim() }));
-$("btn-revise").addEventListener("click", () =>
-  run("Sending failing tests + dependency paths to the local model…", "/api/revise", {}));
+// ---------- events ----------
+$("btn-ask").addEventListener("click", () => act("ask", { request: $("request").value.trim() }));
+$("btn-simulate").addEventListener("click", () => act("simulate", { request: $("request").value.trim() }));
+$("request").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("btn-ask").click(); } });
+$("btn-revise").addEventListener("click", () => act("revise"));
 $("btn-approve").addEventListener("click", () => {
-  const r = state.attempts[selected].report;
-  if (r.verdict === "regression" && !confirmApprove) { confirmApprove = true; return renderActions(r); }
-  run("Applying the patch…", "/api/approve", {});
+  const v = view();
+  if (v.r.verdict === "regression" && !confirmApprove) { confirmApprove = true; return renderDecision(v); }
+  act("approve");
 });
-$("btn-reset").addEventListener("click", () => run("Resetting the demo repo…", "/api/reset", {}));
+$("btn-reset").addEventListener("click", () => act("reset"));
+document.querySelectorAll(".ptab").forEach((b) => b.addEventListener("click", () => {
+  panelTab = b.dataset.tab;
+  $("graph").dataset.key = "";
+  render();
+}));
 
-api("/api/state").then((s) => { state = s; selected = s.attempts.length - 1; render(); }).catch((e) => toast(e.message));
+(async () => {
+  try {
+    [state, files] = await Promise.all([api("/api/state"), api("/api/files")]);
+    onState();
+    if (state.busy) poll();
+  } catch (e) { toast(e.message); }
+})();

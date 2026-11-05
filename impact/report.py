@@ -41,6 +41,7 @@ class Report:
     gaps: list[str]  # changed/impacted symbols with no test evidence at all
     unresolved: list[str]
     graph: dict = field(default_factory=dict)  # nodes/edges for the UI
+    evidence: dict[str, list[str]] = field(default_factory=dict)  # symbol -> tests exercising it
 
     @property
     def regressions(self) -> list[TestRun]:
