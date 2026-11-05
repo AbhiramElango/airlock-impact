@@ -23,7 +23,7 @@ from ..workspace import IGNORE, apply_patch, scratch_copy
 STATIC = Path(__file__).resolve().parent / "static"
 TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}
 MAX_BODY = 20_000
-CANDIDATE_TEMPERATURES = (0.0, 0.4, 0.7, 0.9)
+CANDIDATE_TEMPERATURES = (0.0, 0.3, 0.5, 0.7, 0.8, 0.9)
 VERDICT_TEXT = {"regression": "regression: a selected test fails",
                 "unvalidated": "tests pass, but some affected code has no test",
                 "validated": "every affected function has passing tests"}

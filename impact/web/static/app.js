@@ -351,7 +351,7 @@ function headline(a) {
 
 function oneLiner(a) {
   const changed = a.report.changed.map((c) => fn(c.id)).join(", ") || "tests only";
-  const icon = { regression: "❌", unvalidated: "⚠️", validated: "✅" }[a.report.verdict];
+  const icon = `<b class="v-${a.report.verdict}">${CHIP[a.report.verdict]}</b>`;
   return `${a.source === "tests" ? "added tests" : `changed <code>${esc(changed)}</code>`} · ${icon} ${headline(a)}`;
 }
 
@@ -391,7 +391,7 @@ function renderStepper() {
   const cur = stage();
   const idx = STAGES.findIndex(([k]) => k === cur);
   $("stepper").innerHTML = STAGES.map(([k, label], n) =>
-    `<span class="stp ${n < idx ? "past" : n === idx ? "now" : ""}">${n < idx ? "✓ " : ""}${label}</span>`).join('<span class="stp-sep">›</span>');
+    `<span class="stp ${n < idx ? "past" : n === idx ? "now" : ""}">${label}</span>`).join('<span class="stp-sep">/</span>');
 }
 
 function renderChat() {
@@ -412,7 +412,7 @@ function renderChat() {
     const intro = a.source === "tests" ? "Added tests for the untested code" : a.source === "revision" ? "Revised using the dependency evidence" : "Proposed fix";
     parts.push(`<div class="msg agent ${i === selected ? "selected" : ""}" data-i="${i}">
       <div class="who"><span>${i + 1} · ${intro}</span>${i < last ? `<a class="collapse" data-x="${i}">collapse</a>` : ""}</div>
-      <div class="expl">${esc(a.explanation).replace(/^((?:Locked .+? depends? on it\. ?)+)/, '<span class="lock">🔒 $1</span>')}</div>
+      <div class="expl">${esc(a.explanation).replace(/^((?:Locked .+? depends? on it\. ?)+)/, '<span class="lock">$1</span>')}</div>
       ${diffCard(a.diff, newFiles(i))}
     </div>`);
     parts.push(dependencyCard(a, i));
@@ -466,7 +466,7 @@ function renderPanel(v) {
 function renderTests(v) {
   $("tests").innerHTML = v.r.tests.map((t) => `
     <div class="trow" data-id="${esc(t.id)}">
-      <span>${FAILED(t.status) ? "❌" : t.status === "passed" ? "✅" : "·"}</span>
+      <span class="st ${FAILED(t.status) ? "bad" : t.status === "passed" ? "ok" : ""}">${FAILED(t.status) ? "fail" : t.status === "passed" ? "pass" : "–"}</span>
       <span class="tn">${esc(t.id)}</span>
       <span class="scope ${t.scope}">${t.scope}</span>
       <span class="tp">found via ${esc(t.why.join(" + "))}${t.path.length ? " · " + t.path.map(esc).join(" → ") : ""}</span>
@@ -484,7 +484,7 @@ function renderReport(v) {
   $("report").innerHTML = `<div class="rep">
     <h4>Changed</h4>${list(r.changed.map((c) => `<div class="item"><span class="hop">changed</span>${esc(c.id)} <span style="color:var(--muted)">${esc(c.file)}:${c.line}</span></div>`), "none")}
     <h4>Dependents (blast radius)</h4>${list(r.impacted.map((i) => `<div class="item"><span class="hop">${i.hops} hop${i.hops > 1 ? "s" : ""}</span>${i.path.map(esc).join(" → ")}</div>`), "none")}
-    <h4>No test evidence</h4>${list(r.gaps.map((g) => `<div class="item" style="color:var(--amber)">⚠ ${esc(g)}</div>`), "none")}
+    <h4>No test evidence</h4>${list(r.gaps.map((g) => `<div class="item" style="color:var(--amber)">${esc(g)}</div>`), "none")}
     <h4>Unresolved calls</h4>${list(r.unresolved.map((u) => `<div class="item">? ${esc(u)}</div>`), "none: every call in the repo was resolved")}
   </div>`;
 }
@@ -516,8 +516,8 @@ function ripple(v) {
   if (v.r.gaps.length) steps.push({ ids: v.r.gaps, tone: "warn", text: `⚠ No test reaches ${v.r.gaps.map(short).join(", ")}` });
   if (failed) {
     const far = failedTests.reduce((a, b) => (b.path.length > a.path.length ? b : a));
-    steps.push({ ids: far.path, tone: "bad", text: `✕ Broken through the graph: ${far.path.map((id) => short(id.split(".").pop())).join(" → ")}` });
-  } else if (!v.r.gaps.length) steps.push({ ids: [], tone: "good", text: "✓ Every affected function is covered by a passing test" });
+    steps.push({ ids: far.path, tone: "bad", text: `Broken through the graph: ${far.path.map((id) => short(id.split(".").pop())).join(" → ")}` });
+  } else if (!v.r.gaps.length) steps.push({ ids: [], tone: "good", text: "Every affected function is covered by a passing test" });
 
   const live = cy.elements().not(".faded");
   live.addClass("pending");
