@@ -128,7 +128,6 @@ function autoOpen() {
 
 // ---------- render ----------
 function render() {
-  $("crumb-repo").textContent = state.repo;
   $("tree-root").textContent = state.repo;
   $("pill-model").textContent = state.model;
   $("pill-store").textContent = `graph: ${state.store}`;
