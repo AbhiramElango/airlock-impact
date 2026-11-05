@@ -22,6 +22,8 @@ let panelTab = "graph";
 let cy = null;
 let polling = false;
 let seenAttempts = 0;
+let animateNext = false;
+let rippleTimers = [];
 
 // ---------- data ----------
 async function api(path, body) {
@@ -67,7 +69,7 @@ function onState() {
   if (state.attempts.length !== seenAttempts) {
     seenAttempts = state.attempts.length;
     selected = seenAttempts - 1;
-    if (selected >= 0) autoOpen();
+    if (selected >= 0) { autoOpen(); panelTab = "graph"; animateNext = true; }
   }
   render();
 }
@@ -291,28 +293,49 @@ function newFiles(i) {
   return new Set(Object.keys(cur).filter((f) => JSON.stringify(cur[f]) !== JSON.stringify(prev[f])));
 }
 
+function chains(r) {
+  // maximal dependency paths, drawn from the changed symbol outwards
+  const paths = r.impacted.map((d) => d.path);
+  const extended = new Set(paths.filter((p) => p.length > 2).map((p) => JSON.stringify(p.slice(1))));
+  const maximal = paths.filter((p) => !extended.has(JSON.stringify(p))).map((p) => [...p].reverse());
+  return maximal.length ? maximal : r.changed.map((c) => [c.id]);
+}
+
+function chainHtml(r) {
+  const gaps = new Set(r.gaps);
+  const changed = new Set(r.changed.map((c) => c.id));
+  const ev = r.evidence || {};
+  const all = chains(r);
+  return all.slice(0, 3).map((chain) => `<div class="chain">${chain.map((id, h) => {
+    const kind = changed.has(id) ? "changed" : gaps.has(id) ? "gap" : "covered";
+    const note = changed.has(id) ? "changed" : gaps.has(id) ? `${h} hop${h > 1 ? "s" : ""} · no tests`
+      : `${h} hop${h > 1 ? "s" : ""} · ${(ev[id] || []).length} tests`;
+    return `${h ? '<span class="arrow">←</span>' : ""}<span class="node ${kind}"><code>${esc(id.split(".").pop())}</code><small>${note}</small></span>`;
+  }).join("")}</div>`).join("") + (all.length > 3 ? `<div class="more">+${all.length - 3} more paths in the graph</div>` : "");
+}
+
 function dependencyCard(a, i) {
   const r = a.report;
   const latest = i === state.attempts.length - 1;
-  const gaps = new Set(r.gaps);
   const failed = r.tests.filter((t) => FAILED(t.status));
   const added = r.tests.filter((t) => t.why.includes("added by patch"));
-  const deps = r.impacted.map((d) => `
-    <div class="dep ${gaps.has(d.id) ? "gap" : ""}"><span class="hops">${d.hops} hop${d.hops > 1 ? "s" : ""}</span>
-      <code>${esc(d.id)}</code>${gaps.has(d.id) ? '<span class="warn">no tests</span>' : `<span class="ok">${d.evidence.length} test${d.evidence.length === 1 ? "" : "s"}</span>`}</div>`).join("");
+  const direct = r.tests.filter((t) => t.scope === "direct" && !t.why.includes("added by patch"));
   let action = "";
   if (latest && !state.busy && r.verdict === "regression") action = `<button class="btn primary sm" data-act="revise">Fix it using this evidence</button>`;
   if (latest && !state.busy && r.verdict === "unvalidated") action = `<button class="btn primary sm" data-act="cover">Write tests for ${esc(r.gaps.map((g) => g.split(".").pop() + "()").join(", "))}</button>`;
   const summary = failed.length ? `${failed.map((t) => `<code>${esc(t.id.split(".").pop())}</code>`).join(", ")} failed: ${esc((failed[0].message || "").split("\n")[0])}`
     : r.gaps.length ? `All ${r.tests.length} tests pass, but nothing tests ${r.gaps.map((g) => `<code>${esc(g)}</code>`).join(", ")}.`
     : `All ${r.tests.length} tests pass${added.length ? ` (${added.length} new)` : ""}, and every affected function is covered.`;
+  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
   return `<div class="card dep-card ${r.verdict}" data-i="${i}">
     <div class="card-title"><span>Dependency check</span><span class="vchip ${r.verdict}">${CHIP[r.verdict]}</span></div>
-    <div class="dep-changed">changed <code>${r.changed.map((c) => esc(c.id)).join(", ")}</code></div>
-    ${deps || '<div class="dep">no other code depends on it</div>'}
-    <div class="dep-tests">${r.tests.length} tests run · ${r.tests.length - failed.length} passed${failed.length ? ` · <b class="bad">${failed.length} failed</b>` : ""}
-      <a class="view-graph" data-i="${i}">view graph</a></div>
+    ${chainHtml(r)}
+    <div class="contrast">
+      <div class="row"><span class="lbl">Typical agent checks</span><span>${plural(direct.length, "test")} <small>(the changed function's own)</small></span></div>
+      <div class="row strong"><span class="lbl">Dependency graph found</span><span>${plural(r.impacted.length, "dependent")} · ${plural(r.tests.length, "test")}${r.gaps.length ? ` · <b class="warn">${r.gaps.length} untested</b>` : ""}${failed.length ? ` · <b class="bad">${failed.length} failing</b>` : ""}</span></div>
+    </div>
     <div class="dep-summary">${summary}</div>
+    <div class="dep-foot"><a class="view-graph" data-i="${i}">▶ replay on graph</a></div>
     ${action}
   </div>`;
 }
@@ -344,7 +367,7 @@ function renderChat() {
   chat.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", () => act(b.dataset.act)));
   chat.querySelectorAll(".msg.agent, .view-graph").forEach((el) => el.addEventListener("click", () => {
     selected = +el.dataset.i;
-    if (el.classList.contains("view-graph")) panelTab = "graph";
+    if (el.classList.contains("view-graph")) { panelTab = "graph"; animateNext = true; }
     $("graph").dataset.key = "";
     render();
   }));
@@ -355,6 +378,8 @@ function renderPanel(v) {
   document.querySelectorAll(".ptab").forEach((b) => b.classList.toggle("active", b.dataset.tab === panelTab));
   ["graph", "tests", "report", "terminal"].forEach((t) => $(t).classList.toggle("hidden", t !== panelTab));
   $("graph-legend").classList.toggle("hidden", panelTab !== "graph");
+  if (panelTab !== "graph") $("graph-caption").classList.add("hidden");
+  else if ($("graph-caption").innerHTML) $("graph-caption").classList.remove("hidden");
   $("tests-count").textContent = v ? `(${v.r.tests.length})` : "";
   if (!v) {
     if (cy) { cy.destroy(); cy = null; }
@@ -365,7 +390,11 @@ function renderPanel(v) {
   renderTests(v);
   renderReport(v);
   const key = `${selected}:${state.attempts.length}`;
-  if (panelTab === "graph" && $("graph").dataset.key !== key) { $("graph").dataset.key = key; renderGraph(v); }
+  if (panelTab === "graph" && ($("graph").dataset.key !== key || animateNext)) {
+    $("graph").dataset.key = key;
+    renderGraph(v, animateNext);
+    animateNext = false;
+  }
 }
 
 function renderTests(v) {
@@ -394,7 +423,49 @@ function renderReport(v) {
   </div>`;
 }
 
-function renderGraph(v) {
+function caption(text, tone = "") {
+  const c = $("graph-caption");
+  c.className = `graph-caption ${tone}`;
+  c.innerHTML = text;
+  c.classList.toggle("hidden", !text);
+}
+
+function ripple(v) {
+  // Replays the traversal: changed node, then each hop outward, then the tests that reach it.
+  const hopOf = {};
+  v.r.changed.forEach((c) => { hopOf[c.id] = 0; });
+  v.r.impacted.forEach((i) => { hopOf[i.id] = i.hops; });
+  const maxHop = Math.max(0, ...Object.values(hopOf));
+  const short = (id) => `<code>${esc(id)}</code>`;
+  const steps = [];
+  for (let h = 0; h <= maxHop; h++) {
+    const ids = Object.keys(hopOf).filter((id) => hopOf[id] === h);
+    if (ids.length) steps.push({ ids, text: h === 0 ? `Changed ${ids.map(short).join(", ")}`
+      : `Hop ${h} · ${ids.map(short).join(", ")} depend${ids.length === 1 ? "s" : ""} on it` });
+  }
+  const failed = v.r.tests.filter((t) => FAILED(t.status)).length;
+  steps.push({ ids: v.r.tests.map((t) => t.id), tone: failed ? "bad" : "",
+    text: `${v.r.tests.length} tests reach the change · ${v.r.tests.length - failed} passed${failed ? ` · ${failed} failed` : ""}` });
+  if (v.r.gaps.length) steps.push({ ids: v.r.gaps, tone: "warn", pulse: true,
+    text: `⚠ No test reaches ${v.r.gaps.map(short).join(", ")}` });
+  else if (!failed) steps.push({ ids: [], tone: "good", text: "✓ Every affected function is covered by a passing test" });
+
+  const live = cy.elements().not(".faded");
+  live.addClass("pending");
+  steps.forEach((step, k) => rippleTimers.push(setTimeout(() => {
+    const nodes = cy.nodes().filter((n) => step.ids.includes(n.id()));
+    nodes.removeClass("pending");
+    cy.edges(".pending").filter((e) => !e.source().hasClass("pending") && !e.target().hasClass("pending")).removeClass("pending");
+    nodes.forEach((n) => n.animate({ style: { "border-width": 7 } }, { duration: 220,
+      complete: () => n.animate({ style: { "border-width": 2 } }, { duration: 260, complete: () => n.removeStyle("border-width") }) }));
+    caption(step.text, step.tone);
+  }, 250 + 750 * k)));
+}
+
+function renderGraph(v, animate = false) {
+  rippleTimers.forEach(clearTimeout);
+  rippleTimers = [];
+  caption("");
   const r = v.r;
   const hot = new Set();
   r.tests.filter((t) => FAILED(t.status)).forEach((t) => {
@@ -434,6 +505,7 @@ function renderGraph(v) {
         "target-arrow-shape": "triangle", "curve-style": "bezier", "arrow-scale": 0.8 } },
       { selector: "edge.READS", style: { "line-style": "dotted" } },
       { selector: "edge.hot", style: { width: 3.5, "line-color": "#e5484d", "target-arrow-color": "#e5484d" } },
+      { selector: ".pending", style: { opacity: 0.07 } },
     ],
   });
   cy.nodes(".faded").connectedEdges().addClass("faded");
@@ -441,6 +513,7 @@ function renderGraph(v) {
   cy.fit(focus.length ? focus : undefined, 28);
   if (cy.zoom() > 1.4) { cy.zoom(1.4); cy.center(focus); }
   cy.on("tap", "node", (e) => openFile(e.target.data("file"), e.target.data("line")));
+  if (animate) ripple(v);
 }
 
 async function runProgram() {

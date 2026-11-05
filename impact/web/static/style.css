@@ -175,8 +175,34 @@ button { font: inherit; cursor: pointer; }
 .dep .ok { margin-left: auto; color: var(--green); font-size: 11.5px; }
 .dep-tests { color: var(--ink-2); border-top: 1px solid var(--line-2); margin-top: 6px; padding-top: 8px; }
 .dep-tests .bad { color: var(--red); }
-.view-graph { margin-left: auto; color: var(--violet); cursor: pointer; font-size: 12px; }
+.view-graph { color: var(--violet); cursor: pointer; font-size: 12px; font-weight: 600; }
 .dep-summary { color: var(--ink-2); font-size: 12.5px; margin-top: 6px; line-height: 1.5; }
+.chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 2px 0 8px; }
+.chain .arrow { color: var(--muted); font-size: 13px; }
+.chain .node { display: inline-flex; flex-direction: column; align-items: center; border-radius: 9px; padding: 4px 9px;
+  border: 1.5px solid var(--line); background: #fff; }
+.chain .node code { font: 600 12px var(--mono); }
+.chain .node small { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.chain .node.changed { background: var(--violet); border-color: var(--violet-d); }
+.chain .node.changed code, .chain .node.changed small { color: #fff; }
+.chain .node.covered { background: var(--green-50); border-color: #bfe5cc; }
+.chain .node.gap { background: var(--amber-50); border: 1.5px dashed var(--amber); }
+.chain .node.gap small { color: var(--amber); font-weight: 600; }
+.more { color: var(--muted); font-size: 11.5px; }
+.contrast { border-radius: 10px; background: var(--bg); padding: 8px 10px; font-size: 12.5px; }
+.contrast .row { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; color: var(--muted); }
+.contrast .row.strong { color: var(--ink); font-weight: 600; }
+.contrast .lbl { white-space: nowrap; }
+.contrast small { color: var(--muted); font-weight: 400; }
+.contrast .warn { color: var(--amber); } .contrast .bad { color: var(--red); }
+.dep-foot { display: flex; justify-content: flex-end; margin-top: 6px; }
+.graph-caption { position: absolute; left: 12px; top: 10px; z-index: 5; background: rgba(255, 255, 255, .95);
+  border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; font-size: 13px; font-weight: 600;
+  box-shadow: 0 4px 14px rgba(31, 35, 48, .08); }
+.graph-caption code { font-family: var(--mono); font-size: 12px; color: var(--violet); }
+.graph-caption.warn { border-color: var(--amber); color: var(--amber); }
+.graph-caption.bad { border-color: var(--red); color: var(--red); }
+.graph-caption.good { border-color: var(--green); color: var(--green); }
 .btn.sm { margin-top: 10px; padding: 6px 12px; font-size: 12.5px; width: 100%; }
 
 .composer { margin: 0 14px 14px; border: 1px solid var(--line); border-radius: 14px; padding: 10px; background: #fff;
