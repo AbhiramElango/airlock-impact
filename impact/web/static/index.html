@@ -37,6 +37,7 @@
       <div><span class="badge b-fail">✕</span> test fails</div>
     </div>
   </aside>
+  <div class="gutter v" data-g="left" title="Drag to resize"></div>
 
   <section class="center">
     <div class="tabbar">
@@ -49,12 +50,14 @@
         <p>Ask the agent for a fix. Changed and affected files light up in the explorer.</p>
       </div>
     </div>
+    <div class="gutter h" data-g="panel" title="Drag to resize"></div>
     <div class="panel">
       <div class="panel-tabs">
         <button class="ptab active" data-tab="graph">Blast radius</button>
         <button class="ptab" data-tab="tests">Tests <span id="tests-count"></span></button>
         <button class="ptab" data-tab="report">Report</button>
         <button class="ptab" data-tab="terminal">Terminal</button>
+        <button class="max-btn" id="btn-max" title="Expand / restore panel">⤢</button>
         <div class="panel-legend" id="graph-legend">
           <span><i class="sw sw-changed"></i>changed</span>
           <span><i class="sw sw-impacted"></i>affected</span>
@@ -74,6 +77,7 @@
       </div>
     </div>
   </section>
+  <div class="gutter v" data-g="right" title="Drag to resize"></div>
 
   <aside class="agent">
     <div class="pane-title">Agent</div>

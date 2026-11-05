@@ -318,7 +318,7 @@ function chainHtml(r) {
     const hops = `${h} hop${h > 1 ? "s" : ""}`;
     const note = changed.has(id) ? (broken ? `changed · ${broken} test${broken > 1 ? "s" : ""} fail` : "changed") : broken ? `${hops} · ${broken} test${broken > 1 ? "s" : ""} fail`
       : gaps.has(id) ? `${hops} · no tests` : `${hops} · ${(ev[id] || []).length} tests`;
-    return `<span class="node ${kind}"><code>${esc(id.split(".").pop())}</code><small>${note}</small></span>`;
+    return `<span class="node ${kind}"><code>${esc(label(id))}</code><small>${note}</small></span>`;
   };
   const roots = [...new Set([...r.changed.map((c) => c.id), ...all.map((c) => c[0])])];
   return roots.map((root) => {
@@ -329,7 +329,8 @@ function chainHtml(r) {
   }).join("") + (all.length > 4 ? `<div class="more">+${all.length - 4} more paths in the graph</div>` : "");
 }
 
-const fn = (id) => `${id.split(".").pop()}()`;
+const label = (id) => (id.startsWith("file:") ? id.slice(5) : id.split(".").pop());
+const fn = (id) => (id.startsWith("file:") ? label(id) : `${label(id)}()`);
 
 function headline(a) {
   // one plain-English sentence for the card
@@ -602,6 +603,50 @@ function renderTerminal() {
       <div class="term-out">${shade(r.output)}</div></div>`).join("");
   $("terminal").scrollTop = $("terminal").scrollHeight;
 }
+
+// ---------- resizable panes ----------
+const LIMITS = { left: [140, 420], right: [300, 640], panel: [140, () => window.innerHeight - 200] };
+const root = document.documentElement;
+
+function setSize(key, px) {
+  const [min, maxRaw] = LIMITS[key];
+  const max = typeof maxRaw === "function" ? maxRaw() : maxRaw;
+  const v = Math.max(min, Math.min(max, px));
+  root.style.setProperty(key === "panel" ? "--panel-h" : `--${key}`, `${v}px`);
+  localStorage.setItem(`pane-${key}`, v);
+  if (cy) { cy.resize(); }
+}
+
+["left", "right", "panel"].forEach((k) => { const v = localStorage.getItem(`pane-${k}`); if (v) setSize(k, +v); });
+
+document.querySelectorAll(".gutter").forEach((g) => g.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  const key = g.dataset.g;
+  const startX = e.clientX, startY = e.clientY;
+  const start = key === "left" ? document.querySelector(".explorer").offsetWidth
+    : key === "right" ? document.querySelector(".agent").offsetWidth : document.querySelector(".panel").offsetHeight;
+  g.classList.add("dragging");
+  document.body.classList.add("resizing", key === "panel" ? "row" : "col");
+  const move = (ev) => setSize(key, key === "left" ? start + ev.clientX - startX
+    : key === "right" ? start - (ev.clientX - startX) : start - (ev.clientY - startY));
+  const up = () => {
+    g.classList.remove("dragging");
+    document.body.classList.remove("resizing", "row", "col");
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    if (cy) { cy.resize(); cy.fit(cy.nodes().not(".faded"), 28); }
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}));
+
+$("btn-max").addEventListener("click", () => {
+  const h = document.querySelector(".panel").offsetHeight;
+  const big = window.innerHeight - 200;
+  setSize("panel", h < big - 20 ? big : 310);
+  if (cy) cy.fit(cy.nodes().not(".faded"), 28);
+});
+window.addEventListener("resize", () => { if (cy) cy.resize(); });
 
 // ---------- events ----------
 $("btn-ask").addEventListener("click", () => act("ask", { request: $("request").value.trim() }));
