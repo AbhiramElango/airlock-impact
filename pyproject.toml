@@ -1,0 +1,20 @@
+[project]
+name = "airlock-impact"
+version = "0.1.0"
+description = "Blast-radius validation for AI-proposed code patches"
+requires-python = ">=3.12"
+dependencies = ["neo4j>=5.20", "coverage>=7.6", "pytest>=8"]
+
+[project.scripts]
+impact = "impact.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["neo4j: needs a running Neo4j"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["impact"]

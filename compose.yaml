@@ -1,0 +1,11 @@
+services:
+  neo4j:
+    image: neo4j:5-community
+    container_name: airlock-neo4j
+    ports: ["7474:7474", "7687:7687"]
+    environment:
+      NEO4J_AUTH: neo4j/airlock-dev
+    volumes: [airlock-neo4j-data:/data]
+volumes:
+  airlock-neo4j-data:
+    external: true
