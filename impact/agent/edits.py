@@ -26,7 +26,8 @@ class Edit:
 def parse(text: str) -> tuple[str, list[Edit]]:
     m = EXPLANATION.search(text)
     explanation = m.group(1).strip() if m else ""
-    edits = [Edit(b["file"].strip("`"), b["search"], b["replace"]) for b in BLOCK.finditer(text)]
+    edits = [Edit(b["file"].strip("`"), b["search"], b["replace"]) for b in BLOCK.finditer(text)
+             if b["search"] != b["replace"]]  # no-op blocks are noise
     if not edits:
         raise EditError("model returned no SEARCH/REPLACE edits")
     return explanation, edits
@@ -34,8 +35,15 @@ def parse(text: str) -> tuple[str, list[Edit]]:
 
 def to_diff(root: Path, edits: list[Edit]) -> str:
     """Apply edits in memory and return a unified diff. The repo on disk is not modified."""
+    return unified({f: ((root / f).read_text(), after) for f, after in apply(root, edits).items()})
+
+
+def apply(root: Path, edits: list[Edit]) -> dict[str, str]:
+    """Edits applied in memory: {file: new text}."""
     new: dict[str, str] = {}
     for e in edits:
+        if not (root / e.file).is_file() and e.file[:2] in ("a/", "b/"):  # copied from a diff header
+            e = Edit(e.file[2:], e.search, e.replace)
         path = (root / e.file).resolve()
         if not path.is_relative_to(root.resolve()) or not path.is_file():
             raise EditError(f"unknown file: {e.file}")
@@ -46,8 +54,7 @@ def to_diff(root: Path, edits: list[Edit]) -> str:
                 raise EditError(f"SEARCH text not found exactly once in {e.file}")
             e = Edit(e.file, stripped, e.replace)
         new[e.file] = text.replace(e.search, e.replace, 1)
-
-    return unified({f: ((root / f).read_text(), after) for f, after in new.items()})
+    return new
 
 
 def unified(changes: dict[str, tuple[str, str]]) -> str:

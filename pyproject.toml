@@ -14,6 +14,7 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = ["fixtures"]
 markers = ["neo4j: needs a running Neo4j"]
 
 [tool.hatch.build.targets.wheel]

@@ -305,13 +305,23 @@ function chainHtml(r) {
   const gaps = new Set(r.gaps);
   const changed = new Set(r.changed.map((c) => c.id));
   const ev = r.evidence || {};
+  const failing = new Set(r.tests.filter((t) => FAILED(t.status)).map((t) => t.id));
   const all = chains(r);
-  return all.slice(0, 3).map((chain) => `<div class="chain">${chain.map((id, h) => {
-    const kind = changed.has(id) ? "changed" : gaps.has(id) ? "gap" : "covered";
-    const note = changed.has(id) ? "changed" : gaps.has(id) ? `${h} hop${h > 1 ? "s" : ""} · no tests`
-      : `${h} hop${h > 1 ? "s" : ""} · ${(ev[id] || []).length} tests`;
-    return `${h ? '<span class="arrow">←</span>' : ""}<span class="node ${kind}"><code>${esc(id.split(".").pop())}</code><small>${note}</small></span>`;
-  }).join("")}</div>`).join("") + (all.length > 3 ? `<div class="more">+${all.length - 3} more paths in the graph</div>` : "");
+  const chip = (id, h) => {
+    const broken = (ev[id] || []).filter((t) => failing.has(t)).length;
+    const kind = changed.has(id) ? "changed" : broken ? "broken" : gaps.has(id) ? "gap" : "covered";
+    const hops = `${h} hop${h > 1 ? "s" : ""}`;
+    const note = changed.has(id) ? "changed" : broken ? `${hops} · ${broken} test${broken > 1 ? "s" : ""} fail`
+      : gaps.has(id) ? `${hops} · no tests` : `${hops} · ${(ev[id] || []).length} tests`;
+    return `<span class="node ${kind}"><code>${esc(id.split(".").pop())}</code><small>${note}</small></span>`;
+  };
+  const roots = [...new Set(all.map((c) => c[0]))];
+  return roots.map((root) => {
+    const branches = all.filter((c) => c[0] === root && c.length > 1).slice(0, 4);
+    return `<div class="tree">${chip(root, 0)}<div class="branches">${branches.map((c) =>
+      `<div class="chain">${c.slice(1).map((id, k) => `<span class="arrow">←</span>${chip(id, k + 1)}`).join("")}</div>`
+    ).join("") || '<div class="chain"><small class="none">nothing depends on it</small></div>'}</div></div>`;
+  }).join("") + (all.length > 4 ? `<div class="more">+${all.length - 4} more paths in the graph</div>` : "");
 }
 
 function dependencyCard(a, i) {
@@ -350,11 +360,11 @@ function renderChat() {
   const parts = [`<div class="msg user">${esc(state.request)}</div>`];
   state.attempts.forEach((a, i) => {
     const intro = a.source === "tests" ? "I added tests for the code the check found untested:"
-      : a.source === "revision" ? "Revised using the failing tests and their dependency paths:" : "";
+      : a.source === "revision" ? "Revised using the dependency evidence:" : "";
     parts.push(`<div class="msg agent ${i === selected ? "selected" : ""}" data-i="${i}">
       <div class="who">Agent · ${esc(state.model)}</div>
       ${intro ? `<div class="intro">${intro}</div>` : ""}
-      <div class="expl">${esc(a.explanation)}</div>
+      <div class="expl">${esc(a.explanation).replace(/^((?:Locked .+? depends? on it\. ?)+)/, '<span class="lock">🔒 $1</span>')}</div>
       ${diffCard(a.diff, newFiles(i))}
     </div>`);
     parts.push(dependencyCard(a, i));
@@ -443,12 +453,15 @@ function ripple(v) {
     if (ids.length) steps.push({ ids, text: h === 0 ? `Changed ${ids.map(short).join(", ")}`
       : `Hop ${h} · ${ids.map(short).join(", ")} depend${ids.length === 1 ? "s" : ""} on it` });
   }
-  const failed = v.r.tests.filter((t) => FAILED(t.status)).length;
+  const failedTests = v.r.tests.filter((t) => FAILED(t.status));
+  const failed = failedTests.length;
   steps.push({ ids: v.r.tests.map((t) => t.id), tone: failed ? "bad" : "",
     text: `${v.r.tests.length} tests reach the change · ${v.r.tests.length - failed} passed${failed ? ` · ${failed} failed` : ""}` });
-  if (v.r.gaps.length) steps.push({ ids: v.r.gaps, tone: "warn", pulse: true,
-    text: `⚠ No test reaches ${v.r.gaps.map(short).join(", ")}` });
-  else if (!failed) steps.push({ ids: [], tone: "good", text: "✓ Every affected function is covered by a passing test" });
+  if (v.r.gaps.length) steps.push({ ids: v.r.gaps, tone: "warn", text: `⚠ No test reaches ${v.r.gaps.map(short).join(", ")}` });
+  if (failed) {
+    const far = failedTests.reduce((a, b) => (b.path.length > a.path.length ? b : a));
+    steps.push({ ids: far.path, tone: "bad", text: `✕ Broken through the graph: ${far.path.map((id) => short(id.split(".").pop())).join(" → ")}` });
+  } else if (!v.r.gaps.length) steps.push({ ids: [], tone: "good", text: "✓ Every affected function is covered by a passing test" });
 
   const live = cy.elements().not(".faded");
   live.addClass("pending");

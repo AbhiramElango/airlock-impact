@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ..ports import LLM
 from ..report import Report
+from ..workspace import apply_patch, scratch_copy
 from . import edits
 
 MAX_CONTEXT_CHARS = 12_000
@@ -41,12 +42,26 @@ class Fixer:
         return self._ask(repo, prompt)
 
     def revise(self, repo: Path, request: str, previous: Proposal, report: Report) -> Proposal:
+        """Graph guardrail: shared code whose change broke other callers is locked, and the model writes a
+        fresh fix against the original files that leaves it untouched."""
+        locked = locked_symbols(report)
+        locked_files = {n["file"] for n in report.graph.get("nodes", []) if n["id"] in locked}
         prompt = (f"{context(repo)}\n\nUSER REQUEST: {request}\n\n"
-                  f"A PREVIOUS PATCH WAS REJECTED:\n{previous.diff}\n"
-                  f"WHY IT WAS REJECTED (impact analysis):\n{feedback(report)}\n\n"
-                  "Write a corrected patch against the ORIGINAL files above. "
-                  f"Do not reason step by step; the explanation is one sentence.\n\n{RULES}\n")
-        return self._ask(repo, prompt)
+                  f"A PREVIOUS FIX WAS REJECTED. IMPACT ANALYSIS:\n{feedback(report)}\n\n"
+                  f"{dependent_code(repo, report)}"
+                  + (f"LOCKED: {', '.join(sorted(locked))} in {', '.join(sorted(locked_files))}. Other code depends on "
+                     "its current behavior, so changing it breaks them. Do NOT edit "
+                     f"{', '.join(sorted(locked_files))}. Fix the bug where it is used instead.\n" if locked else "")
+                  + "Do not edit test files. Do not reason step by step; the explanation is one sentence.\n\n"
+                  f"{RULES}\n")
+        for _ in range(2):  # one retry if the model touches what the graph locked
+            explanation, found = edits.parse(self.llm.complete(prompt))
+            bad = sorted({e.file for e in found if e.file in locked_files or Path(e.file).name.startswith("test_")})
+            if not bad:
+                return Proposal(explanation, edits.to_diff(repo, found))
+            prompt += (f"\nREJECTED: your edit changed {', '.join(bad)}, which is locked. "
+                       "Leave it exactly as it is and change only the code that uses it.\n")
+        raise edits.EditError(f"revision kept editing locked files: {', '.join(bad)}")
 
     def _ask(self, repo: Path, prompt: str) -> Proposal:
         explanation, found = edits.parse(self.llm.complete(prompt))
@@ -80,3 +95,41 @@ def feedback(r: Report) -> str:
     if r.gaps:
         lines.append(f"- affected but untested: {', '.join(r.gaps)}")
     return "\n".join(lines)
+
+
+def locked_symbols(r: Report) -> set[str]:
+    """Changed symbols whose change broke a test that reaches them through another caller."""
+    changed = {c.id for c in r.changed}
+    return {t.path[-1] for t in r.regressions if t.path and t.path[-1] in changed and len(t.path) > 2}
+
+
+def original_code(repo: Path, r: Report) -> str:
+    """The changed functions as they were before the patch (repo is the unpatched original)."""
+    nodes = {n["id"]: n for n in r.graph.get("nodes", [])}
+    blocks = []
+    for c in r.changed:
+        n = nodes.get(c.id)
+        if n and n["kind"] == "Function":
+            text = (repo / n["file"]).read_text().splitlines()
+            blocks.append(f"# {c.id} BEFORE your change ({n['file']}):\n" + "\n".join(text[n["start"] - 1:n["end"]]))
+    return "\n".join(blocks) + "\n\n" if blocks else ""
+
+
+def dependent_code(repo: Path, r: Report) -> str:
+    """Graph evidence: every function that depends on the changed code, with its source, so the model can
+    see what callers expect. Changing a shared function's behavior breaks all of them."""
+    nodes = {n["id"]: n for n in r.graph.get("nodes", [])}
+    broken = {sym for t in r.regressions for sym in t.path[1:-1]}
+    blocks = []
+    for d in r.impacted:
+        n = nodes.get(d.id)
+        if not n or n["kind"] != "Function":
+            continue
+        lines = (repo / n["file"]).read_text().splitlines()[n["start"] - 1:n["end"]]
+        status = "BROKEN by the previous patch" if d.id in broken else "depends on it"
+        blocks.append(f"# {d.id} ({n['file']}), {d.hops} hop(s) from the change, {status}\n" + "\n".join(lines))
+    if not blocks:
+        return ""
+    changed = ", ".join(c.id for c in r.changed)
+    return (f"CODE THAT DEPENDS ON {changed} (from the dependency graph). Its current behavior is relied on "
+            f"by all of these; keep them working:\n" + "\n\n".join(blocks) + "\n\n")

@@ -6,7 +6,7 @@ from impact.agent import edits
 from impact.agent.fixer import Fixer
 from impact.agent.ollama import require_loopback
 
-DEMO = Path(__file__).resolve().parents[1] / "demo" / "restaurant"
+DEMO = Path(__file__).resolve().parent / "fixtures" / "restaurant"
 
 REPLY = """EXPLANATION: TAX_PERCENT is a percentage, so divide by 100.
 
@@ -70,3 +70,9 @@ def test_merge_places_imports_and_appends_tests():
     assert "from receipt import totals, receipt" in out
     assert out.count("from pytest import approx") == 1
     assert out.rstrip().endswith("def test_b():\n    assert receipt()")
+
+
+def test_accepts_diff_style_path_prefix():
+    diff = edits.to_diff(DEMO, [edits.Edit("a/tax.py", "return amount * (1 + TAX_PERCENT)",
+                                           "return amount * (1 + TAX_PERCENT / 100)")])
+    assert diff.startswith("--- a/tax.py")

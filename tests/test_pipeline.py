@@ -9,7 +9,7 @@ from impact.pipeline import ImpactAnalyzer
 from impact.runner import PytestRunner
 from impact.stores.memory_store import MemoryStore
 
-DEMO = Path(__file__).resolve().parents[1] / "demo"
+DEMO = Path(__file__).resolve().parent / "fixtures"
 
 
 def test_touched_lines():

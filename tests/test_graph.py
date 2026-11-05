@@ -6,7 +6,7 @@ from impact.model import Kind, Rel
 from impact.parsers.python_ast import PythonParser
 from impact.stores.memory_store import MemoryStore
 
-DEMO = Path(__file__).resolve().parents[1] / "demo" / "restaurant"
+DEMO = Path(__file__).resolve().parent / "fixtures" / "restaurant"
 
 
 @pytest.fixture(scope="module")

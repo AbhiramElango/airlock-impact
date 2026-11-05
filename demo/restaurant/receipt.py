@@ -1,14 +1,14 @@
 """Receipt for one order: food and sales tax."""
 from menu import price_of
 from settings import CURRENCY
-from tax import add_tax
+from tax import sales_tax
 
 ORDER = ["burger", "fries", "soda"]
 
 
 def totals(order=ORDER):
     food = sum(price_of(item) for item in order)
-    return {"food": food, "total": round(add_tax(food), 2)}
+    return {"food": food, "total": round(food + sales_tax(food), 2)}
 
 
 def receipt(order=ORDER):

@@ -1,7 +1,7 @@
 from pytest import approx
 
-from tax import add_tax
+from tax import sales_tax
 
 
-def test_add_tax():
-    assert add_tax(100) == approx(108.0)
+def test_sales_tax():
+    assert sales_tax(100) == approx(108.0)

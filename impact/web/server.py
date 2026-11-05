@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from ..agent.fixer import Fixer, Proposal, feedback
+from ..agent.fixer import Fixer, Proposal, feedback, locked_symbols
 from ..agent.testwriter import TestWriter
 from ..runner import run_command
 from ..pipeline import ImpactAnalyzer
@@ -182,11 +182,15 @@ class ReviewApp:
             raise ValueError("nothing to revise")
         last = self.session.attempts[-1]
         log = StepLog(self.session)
-        log.start("feedback", "Send impact evidence back to the agent")
-        log.done("feedback", feedback(last.report).splitlines()[0] if last.report.tests else "")
+        locked = sorted(locked_symbols(last.report))
+        callers = {sym: [i.id for i in last.report.impacted if i.hops == 1 and i.path[-1] == sym] for sym in locked}
+        note = " ".join(f"Locked {sym}: {', '.join(c)} depend on it." for sym, c in callers.items())
+        log.start("feedback", "Read the dependency evidence")
+        log.done("feedback", note or feedback(last.report).splitlines()[0])
         log.start("patch", f"Local model ({self.model}) revises the patch")
         proposal = self.fixer.revise(self.repo, self.session.request, Proposal(last.explanation, last.diff),
                                      last.report)
+        proposal = Proposal(f"{note} {proposal.explanation}".strip(), proposal.diff)
         log.done("patch", proposal.explanation)
         self._analyze("revision", proposal)
 
