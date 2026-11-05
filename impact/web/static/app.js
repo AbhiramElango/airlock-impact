@@ -145,6 +145,7 @@ function render() {
   renderEditor(v);
   renderChat();
   renderPanel(v);
+  renderChrome(v);
 }
 
 function badgesFor(s, compact) {
@@ -157,8 +158,9 @@ function badgesFor(s, compact) {
 function renderTree(v) {
   $("tree").innerHTML = files.map((f) => {
     const badges = badgesFor(fileStatus(v, f));
+    const ext = f.split(".").pop();
     return `<div class="file ${f === active ? "active" : ""} ${v && !badges ? "dim" : ""}" data-f="${esc(f)}">
-      <span class="name">${esc(f)}</span>${badges}</div>`;
+      <span class="ftype ${ext}">${ext === "py" ? "py" : "md"}</span><span class="name">${esc(f)}</span>${badges}</div>`;
   }).join("");
   document.querySelectorAll(".file").forEach((el) => el.addEventListener("click", () => openFile(el.dataset.f)));
 }
@@ -580,7 +582,7 @@ function renderGraph(v, animate = false) {
   cy.nodes(".faded").connectedEdges().addClass("faded");
   const focus = cy.nodes().not(".faded");
   cy.fit(focus.length ? focus : undefined, 28);
-  if (cy.zoom() > 1.4) { cy.zoom(1.4); cy.center(focus); }
+  if (cy.zoom() > 1.0) { cy.zoom(1.0); cy.center(focus); }
   cy.on("tap", "node", (e) => openFile(e.target.data("file"), e.target.data("line")));
   if (animate) ripple(v);
 }
@@ -602,6 +604,19 @@ function renderTerminal() {
       <div class="term-cmd">$ ${esc(r.cmd)}<span class="tag">${esc(r.label)}</span></div>
       <div class="term-out">${shade(r.output)}</div></div>`).join("");
   $("terminal").scrollTop = $("terminal").scrollHeight;
+}
+
+function renderChrome(v) {
+  // breadcrumb: repo > file > symbol under the first changed/annotated line
+  const sym = v && active ? Object.values(v.nodes).find((n) => n.file === active && (v.changed.has(n.id) || n.id in v.impacted)) : null;
+  $("breadcrumb").innerHTML = active ? `${esc(state.repo)} <span>›</span> <b>${esc(active)}</b>${sym ? ` <span>›</span> ${esc(sym.name)}` : ""}` : "";
+  const r = v?.r;
+  const failed = r ? r.tests.filter((t) => FAILED(t.status)).length : 0;
+  const nodes = r ? r.graph.nodes.length : 0;
+  const edges = r ? r.graph.edges.length : 0;
+  $("statusbar").innerHTML = `<span>⎇ main</span><span>graph: ${esc(state.store)}${r ? ` · ${nodes} nodes · ${edges} edges` : ""}</span>
+    <span class="sb-right">${r ? `<span class="${failed ? "bad" : r.gaps.length ? "warn" : "ok"}">tests ${r.tests.length - failed}/${r.tests.length} passing${r.gaps.length ? ` · ${r.gaps.length} untested` : ""}</span>` : ""}
+    <span>${esc(state.model)} · local</span><span>${state.busy ? "agent working…" : "idle"}</span></span>`;
 }
 
 // ---------- resizable panes ----------
