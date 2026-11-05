@@ -41,17 +41,18 @@ class Fixer:
         prompt = f"{RULES}\n\n{context(repo)}\n\nUSER REQUEST: {request}\n"
         return self._ask(repo, prompt)
 
-    def revise(self, repo: Path, request: str, previous: Proposal, report: Report) -> Proposal:
+    def revise(self, repo: Path, request: str, previous: Proposal, report: Report,
+               locked: set[str] | None = None) -> Proposal:
         """Graph guardrail: shared code whose change broke other callers is locked, and the model writes a
         fresh fix against the original files that leaves it untouched."""
-        locked = locked_symbols(report)
+        locked = (locked or set()) | locked_symbols(report)
         locked_files = {n["file"] for n in report.graph.get("nodes", []) if n["id"] in locked}
         prompt = (f"{context(repo)}\n\nUSER REQUEST: {request}\n\n"
                   f"A PREVIOUS FIX WAS REJECTED. IMPACT ANALYSIS:\n{feedback(report)}\n\n"
                   f"{dependent_code(repo, report)}"
-                  + (f"LOCKED: {', '.join(sorted(locked))} in {', '.join(sorted(locked_files))}. Other code depends on "
-                     "its current behavior, so changing it breaks them. Do NOT edit "
-                     f"{', '.join(sorted(locked_files))}. Fix the bug where it is used instead.\n" if locked else "")
+                  + (f"LOCKED: {', '.join(sorted(locked))} in {', '.join(sorted(locked_files))}. This code was correct "
+                     "before your change and other code relies on it. Do NOT edit "
+                     f"{', '.join(sorted(locked_files))}. Fix the bug in the remaining code instead.\n" if locked else "")
                   + "Do not edit test files. Do not reason step by step; the explanation is one sentence.\n\n"
                   f"{RULES}\n")
         for _ in range(2):  # one retry if the model touches what the graph locked
@@ -98,9 +99,15 @@ def feedback(r: Report) -> str:
 
 
 def locked_symbols(r: Report) -> set[str]:
-    """Changed symbols whose change broke a test that reaches them through another caller."""
+    """Shared symbols whose change broke a test through another caller, plus those broken callers:
+    they were correct before the change (victims, not the bug), so a revision must not touch them."""
     changed = {c.id for c in r.changed}
-    return {t.path[-1] for t in r.regressions if t.path and t.path[-1] in changed and len(t.path) > 2}
+    locked = set()
+    for t in r.regressions:
+        if t.path and t.path[-1] in changed and len(t.path) > 2:
+            locked.add(t.path[-1])
+            locked.update(t.path[1:-1])
+    return locked
 
 
 def original_code(repo: Path, r: Report) -> str:

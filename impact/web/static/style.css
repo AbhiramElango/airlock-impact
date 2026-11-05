@@ -190,6 +190,7 @@ button { font: inherit; cursor: pointer; }
 .dep-card .node.changed { background: var(--violet); border-color: var(--violet-d); }
 .dep-card .node.changed code, .dep-card .node.changed small { color: #fff; }
 .dep-card .node.covered { background: var(--green-50); border-color: #bfe5cc; }
+.dep-card .node.changed.broken-own { background: var(--red); border-color: #a3262a; }
 .dep-card .node.broken { background: var(--red-50); border-color: var(--red); }
 .dep-card .node.broken small { color: var(--red); font-weight: 600; }
 .dep-card .node.gap { background: var(--amber-50); border: 1.5px dashed var(--amber); }

@@ -73,6 +73,7 @@ class Session:
     steps: list[Step] = field(default_factory=list)
     busy: bool = False
     error: str = ""
+    locked: set[str] = field(default_factory=set)  # grows across revisions
 
 
 class ReviewApp:
@@ -182,14 +183,14 @@ class ReviewApp:
             raise ValueError("nothing to revise")
         last = self.session.attempts[-1]
         log = StepLog(self.session)
-        locked = sorted(locked_symbols(last.report))
-        callers = {sym: [i.id for i in last.report.impacted if i.hops == 1 and i.path[-1] == sym] for sym in locked}
-        note = " ".join(f"Locked {sym}: {', '.join(c)} depend on it." for sym, c in callers.items())
+        self.session.locked |= locked_symbols(last.report)
+        locked = sorted(self.session.locked)
+        note = f"Locked {', '.join(locked)}: correct before the change, other code depends on it." if locked else ""
         log.start("feedback", "Read the dependency evidence")
         log.done("feedback", note or feedback(last.report).splitlines()[0])
         log.start("patch", f"Local model ({self.model}) revises the patch")
         proposal = self.fixer.revise(self.repo, self.session.request, Proposal(last.explanation, last.diff),
-                                     last.report)
+                                     last.report, self.session.locked)
         proposal = Proposal(f"{note} {proposal.explanation}".strip(), proposal.diff)
         log.done("patch", proposal.explanation)
         self._analyze("revision", proposal)

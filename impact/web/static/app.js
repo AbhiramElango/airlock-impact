@@ -309,18 +309,18 @@ function chainHtml(r) {
   const all = chains(r);
   const chip = (id, h) => {
     const broken = (ev[id] || []).filter((t) => failing.has(t)).length;
-    const kind = changed.has(id) ? "changed" : broken ? "broken" : gaps.has(id) ? "gap" : "covered";
+    const kind = changed.has(id) ? (broken ? "changed broken-own" : "changed") : broken ? "broken" : gaps.has(id) ? "gap" : "covered";
     const hops = `${h} hop${h > 1 ? "s" : ""}`;
-    const note = changed.has(id) ? "changed" : broken ? `${hops} · ${broken} test${broken > 1 ? "s" : ""} fail`
+    const note = changed.has(id) ? (broken ? `changed · ${broken} test${broken > 1 ? "s" : ""} fail` : "changed") : broken ? `${hops} · ${broken} test${broken > 1 ? "s" : ""} fail`
       : gaps.has(id) ? `${hops} · no tests` : `${hops} · ${(ev[id] || []).length} tests`;
     return `<span class="node ${kind}"><code>${esc(id.split(".").pop())}</code><small>${note}</small></span>`;
   };
-  const roots = [...new Set(all.map((c) => c[0]))];
+  const roots = [...new Set([...r.changed.map((c) => c.id), ...all.map((c) => c[0])])];
   return roots.map((root) => {
     const branches = all.filter((c) => c[0] === root && c.length > 1).slice(0, 4);
     return `<div class="tree">${chip(root, 0)}<div class="branches">${branches.map((c) =>
       `<div class="chain">${c.slice(1).map((id, k) => `<span class="arrow">←</span>${chip(id, k + 1)}`).join("")}</div>`
-    ).join("") || '<div class="chain"><small class="none">nothing depends on it</small></div>'}</div></div>`;
+    ).join("") || '<div class="chain"><small class="none">no other code depends on it</small></div>'}</div></div>`;
   }).join("") + (all.length > 4 ? `<div class="more">+${all.length - 4} more paths in the graph</div>` : "");
 }
 

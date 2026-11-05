@@ -93,5 +93,5 @@ def test_graph_locks_shared_code_and_revision_fixes_the_caller(tmp_path):
     wait(app)
     assert not app.session.error
     final = app.session.attempts[-1]
-    assert final.explanation.startswith("Locked tax.sales_tax:")
+    assert final.explanation.startswith("Locked invoice.invoice_total, tax.sales_tax:")
     assert "tax.py" not in final.diff and not final.report.regressions
