@@ -135,7 +135,7 @@ function render() {
   $("btn-reset").classList.toggle("hidden", !state.can_reset);
   if ($("run-btns").dataset.n !== String(state.programs.length)) {
     $("run-btns").dataset.n = state.programs.length;
-    $("run-btns").innerHTML = state.programs.map((p, i) => `<button class="run-btn" data-p="${i}">▶ ${esc(p)}</button>`).join("");
+    $("run-btns").innerHTML = state.programs.map((p, i) => `<button class="run-btn" data-p="${i}" title="Run ${esc(p)} on the agent's latest patch">▸ ${esc(p)}</button>`).join("");
     $("run-btns").querySelectorAll(".run-btn").forEach((b) => b.addEventListener("click", () => runProgram(+b.dataset.p)));
   }
   $("btn-ask").disabled = state.busy;
