@@ -31,6 +31,7 @@ class Module:
     symbols: dict[str, str] = field(default_factory=dict)  # local name -> node id
     modules: dict[str, str] = field(default_factory=dict)  # alias -> module name
     external: set[str] = field(default_factory=set)  # names imported from outside the repo
+    bodies: dict[str, ast.AST] = field(default_factory=dict)  # function id -> its ast node
 
 
 class PythonParser:
@@ -82,6 +83,8 @@ class PythonParser:
         graph.add(Node(nid, kind, qual, mod.file, node.lineno, node.end_lineno))
         graph.link(parent, nid, Rel.DEFINES)
         mod.symbols[qual] = nid
+        if kind in (Kind.FUNCTION, Kind.TEST):
+            mod.bodies[nid] = node
         return nid
 
     # pass 2: imports
@@ -118,11 +121,8 @@ class PythonParser:
 
     # pass 3: calls and reads inside function bodies
     def _link_bodies(self, graph: CodeGraph, mod: Module, by_name: dict[str, Module]) -> None:
-        for qual, nid in list(mod.symbols.items()):
-            node = graph.nodes.get(nid)
-            if not node or node.file != mod.file or node.kind not in (Kind.FUNCTION, Kind.TEST):
-                continue
-            fn = self._find(mod.tree, node.start)
+        for nid, fn in mod.bodies.items():
+            qual = graph.nodes[nid].name
             cls = qual.split(".")[0] if "." in qual else None
             for sub in ast.walk(fn):
                 if isinstance(sub, ast.Call):
@@ -147,11 +147,6 @@ class PythonParser:
         if isinstance(func, ast.Name):
             return func.id not in known
         return isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id not in known
-
-    @staticmethod
-    def _find(tree: ast.Module, line: int) -> ast.AST:
-        return next(n for n in ast.walk(tree)
-                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.lineno == line)
 
     def _callee(self, func: ast.expr, mod: Module, by_name: dict[str, Module], cls: str | None) -> str | None:
         if isinstance(func, ast.Name):

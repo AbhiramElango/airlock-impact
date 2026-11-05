@@ -47,9 +47,11 @@ class CodeGraph:
     nodes: dict[str, Node] = field(default_factory=dict)
     edges: set[Edge] = field(default_factory=set)
     unresolved: list[str] = field(default_factory=list)  # calls we could not resolve statically
+    _by_file: dict[str, list[Node]] | None = field(default=None, repr=False, compare=False)
 
     def add(self, node: Node) -> None:
         self.nodes[node.id] = node
+        self._by_file = None
 
     def link(self, src: str, dst: str, rel: Rel, source: str = "static") -> None:
         if src != dst:
@@ -60,8 +62,12 @@ class CodeGraph:
 
     def symbol_at(self, file: str, line: int) -> Node | None:
         """Innermost function/class/variable whose span contains the line."""
-        hits = [n for n in self.nodes.values()
-                if n.file == file and n.kind != Kind.FILE and n.start <= line <= n.end]
+        if self._by_file is None:
+            self._by_file = {}
+            for n in self.nodes.values():
+                if n.kind != Kind.FILE:
+                    self._by_file.setdefault(n.file, []).append(n)
+        hits = [n for n in self._by_file.get(file, ()) if n.start <= line <= n.end]
         return min(hits, key=lambda n: n.end - n.start, default=None)
 
 

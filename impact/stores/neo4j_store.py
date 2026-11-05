@@ -42,8 +42,10 @@ class Neo4jStore:
     def dependents(self, ids: list[str], max_hops: int) -> list[Impact]:
         query = f"""
             MATCH (c:Code {{repo: $repo}}) WHERE c.id IN $ids
-            MATCH p = (d:Code {{repo: $repo}})-[:{DEPENDS}*1..{int(max_hops)}]->(c)
+            MATCH (d:Code {{repo: $repo}})-[:{DEPENDS}*1..{int(max_hops)}]->(c)
             WHERE NOT d.id IN $ids
+            WITH DISTINCT d, c
+            MATCH p = shortestPath((d)-[:{DEPENDS}*1..{int(max_hops)}]->(c))
             WITH d, p ORDER BY length(p)
             WITH d, collect(p)[0] AS shortest
             RETURN d.id AS id, length(shortest) AS hops, [n IN nodes(shortest) | n.id] AS path

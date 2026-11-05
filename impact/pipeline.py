@@ -13,7 +13,7 @@ from .report import ImpactRef, Report, SymbolRef, TestRun
 from .runner import PytestRunner, nodeid
 from .workspace import apply_patch, scratch_copy
 
-MAX_HOPS = 4
+MAX_HOPS = 8
 
 
 class ImpactAnalyzer:

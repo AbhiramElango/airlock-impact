@@ -30,16 +30,17 @@ def cmd_index(args) -> None:
         print("   ", u)
 
 
-def build_analyzer(store: str):
+def build_analyzer(store: str, max_hops: int):
     from .coverage_map import CoverageMapper
     from .pipeline import ImpactAnalyzer
     from .runner import PytestRunner
-    return ImpactAnalyzer(PythonParser(), lambda repo: make_store(store, repo), PytestRunner(), CoverageMapper())
+    return ImpactAnalyzer(PythonParser(), lambda repo: make_store(store, repo), PytestRunner(), CoverageMapper(),
+                          max_hops=max_hops)
 
 
 def cmd_analyze(args) -> None:
     from .render_text import render
-    report = build_analyzer(args.store).analyze(Path(args.repo), Path(args.patch).read_text())
+    report = build_analyzer(args.store, args.max_hops).analyze(Path(args.repo), Path(args.patch).read_text())
     print(json.dumps(report.to_dict(), indent=2) if args.json else render(report))
 
 
@@ -55,6 +56,7 @@ def main() -> None:
     ana.add_argument("patch", help="unified diff file")
     ana.add_argument("--store", choices=["neo4j", "memory"], default="neo4j")
     ana.add_argument("--json", action="store_true")
+    ana.add_argument("--max-hops", type=int, default=8, help="how far to follow dependents (default 8)")
     ana.set_defaults(func=cmd_analyze)
     args = p.parse_args()
     args.func(args)
