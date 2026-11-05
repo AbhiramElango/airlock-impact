@@ -55,3 +55,18 @@ def test_llm_must_be_local():
     require_loopback("http://127.0.0.1:11434")
     with pytest.raises(ValueError):
         require_loopback("https://api.example.com")
+
+
+def test_tolerates_decorated_file_header():
+    _, found = edits.parse(REPLY.replace("FILE: tax.py", "FILE: --- tax.py ---"))
+    assert found[0].file == "tax.py"
+
+
+def test_merge_places_imports_and_appends_tests():
+    from impact.agent.testwriter import _merge
+    existing = "from pytest import approx\n\nfrom receipt import totals\n\n\ndef test_a():\n    pass\n"
+    new = "\nfrom pytest import approx\nfrom receipt import receipt\n\n\ndef test_b():\n    assert receipt()\n"
+    out = _merge(existing, new)
+    assert "from receipt import totals, receipt" in out
+    assert out.count("from pytest import approx") == 1
+    assert out.rstrip().endswith("def test_b():\n    assert receipt()")

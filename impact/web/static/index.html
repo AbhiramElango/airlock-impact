@@ -39,7 +39,10 @@
   </aside>
 
   <section class="center">
-    <div class="tabs" id="editor-tabs"></div>
+    <div class="tabbar">
+      <div class="tabs" id="editor-tabs"></div>
+      <button class="run-btn" id="btn-run">▶ Run <span id="run-cmd"></span></button>
+    </div>
     <div class="editor" id="editor">
       <div class="empty-editor">
         <div class="empty-mark"></div>
@@ -51,6 +54,7 @@
         <button class="ptab active" data-tab="graph">Blast radius</button>
         <button class="ptab" data-tab="tests">Tests <span id="tests-count"></span></button>
         <button class="ptab" data-tab="report">Report</button>
+        <button class="ptab" data-tab="terminal">Terminal</button>
         <div class="panel-legend" id="graph-legend">
           <span><i class="sw sw-changed"></i>changed</span>
           <span><i class="sw sw-impacted"></i>affected</span>
@@ -65,6 +69,7 @@
         <div id="graph" class="ptab-body"></div>
         <div id="tests" class="ptab-body hidden"></div>
         <div id="report" class="ptab-body hidden"></div>
+        <div id="terminal" class="ptab-body hidden"><div class="term-empty">Press ▶ Run to execute the program on the current code.</div></div>
       </div>
     </div>
   </section>
@@ -75,7 +80,6 @@
       <textarea id="request" rows="2">The receipt total is way too high.</textarea>
       <div class="composer-actions">
         <button class="btn primary" id="btn-ask">Ask agent</button>
-        <button class="btn ghost" id="btn-simulate" title="Load a plausible-looking bad fix">Simulate bad fix</button>
       </div>
     </div>
     <div class="run" id="run">
@@ -84,7 +88,7 @@
     <div class="decision" id="decision">
       <div class="verdict" id="verdict"></div>
       <div class="decision-actions">
-        <button class="btn ghost" id="btn-revise" disabled>↩ Send back to agent</button>
+        <button class="btn ghost" id="btn-next" disabled>↩ Send back to agent</button>
         <button class="btn approve" id="btn-approve" disabled>Approve &amp; apply</button>
       </div>
     </div>

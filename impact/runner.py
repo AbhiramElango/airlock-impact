@@ -57,3 +57,13 @@ def parse_junit(path: Path) -> dict[str, TestOutcome]:
                 break
         results[test_id] = TestOutcome(status, message)
     return results
+
+
+def run_command(root: Path, argv: list[str], timeout_s: int = 20) -> dict:
+    """Run a fixed program (the demo's entry point) the same isolated way as tests."""
+    try:
+        p = subprocess.run(argv, cwd=root, env=scrubbed_env(), capture_output=True, text=True,
+                           timeout=timeout_s, stdin=subprocess.DEVNULL)
+        return {"code": p.returncode, "output": (p.stdout + p.stderr)[-4000:]}
+    except subprocess.TimeoutExpired:
+        return {"code": None, "output": f"timed out after {timeout_s}s"}

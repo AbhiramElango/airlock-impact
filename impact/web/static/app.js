@@ -2,7 +2,8 @@
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const SOURCE = { agent: "agent", revision: "agent revision", simulated: "simulated" };
+const SOURCE = { agent: "agent fix", revision: "agent revision", tests: "agent adds tests" };
+const runs = [];
 const VERDICT = {
   regression: "Regression: do not approve",
   unvalidated: "Passes, but parts are untested",
@@ -132,8 +133,8 @@ function render() {
   $("pill-model").textContent = state.model;
   $("pill-store").textContent = `graph: ${state.store}`;
   $("btn-reset").classList.toggle("hidden", !state.can_reset);
-  $("btn-simulate").classList.toggle("hidden", !state.can_simulate);
-  $("btn-ask").disabled = $("btn-simulate").disabled = state.busy;
+  $("run-cmd").textContent = state.run_cmd.replace(/^\S*python\S*/, "python");
+  $("btn-ask").disabled = state.busy;
   const v = view();
   renderTree(v);
   renderTabs(v);
@@ -221,7 +222,8 @@ function lensFor(v, node) {
   const t = v.tests[node.id];
   if (t) {
     const bad = FAILED(t.status);
-    chips.push(`<span class="chip ${bad ? "fail" : "pass"}">${bad ? "✕ failed" : "✓ passed"}</span>`, `${t.scope} test`);
+    const kind = t.why.includes("added by patch") ? "new test · added by agent" : `${t.scope} test`;
+    chips.push(`<span class="chip ${bad ? "fail" : "pass"}">${bad ? "✕ failed" : "✓ passed"}</span>`, kind);
     if (bad) chips.push(`<span style="color:var(--red)">${esc((t.message || "").split("\n")[0])}</span>`);
     range = bad ? "r-fail" : "r-pass";
   }
@@ -303,12 +305,13 @@ function renderRun() {
 
 function renderDecision(v) {
   const box = $("verdict");
-  const revise = $("btn-revise");
+  const next = $("btn-next");
   const approve = $("btn-approve");
   if (!v) {
     box.className = "verdict";
-    box.innerHTML = state.busy ? "<b>Working…</b>The agent is running." : "<b>No patch yet</b>Ask the agent, or simulate a bad fix.";
-    revise.disabled = approve.disabled = true;
+    box.innerHTML = state.busy ? "<b>Working…</b>The agent is running." : "<b>No patch yet</b>Run the program, then describe what looks wrong.";
+    next.disabled = approve.disabled = true;
+    next.textContent = "↩ Send back to agent";
     return;
   }
   const r = v.r;
@@ -331,7 +334,10 @@ function renderDecision(v) {
     box.className = `verdict ${r.verdict}`;
     box.innerHTML = `<b>${VERDICT[r.verdict]}</b>${sub}`;
   }
-  revise.disabled = !latest || state.busy || state.approved || r.verdict === "validated";
+  next.dataset.action = r.verdict === "regression" ? "revise" : "cover";
+  next.textContent = r.verdict === "regression" ? "↩ Fix regression using graph evidence"
+    : r.verdict === "unvalidated" ? "↩ Write tests for untested code" : "↩ Send back to agent";
+  next.disabled = !latest || state.busy || state.approved || r.verdict === "validated";
   approve.disabled = !latest || state.busy || state.approved;
   approve.className = `btn ${r.verdict === "regression" ? "danger" : "approve"}`;
   approve.textContent = r.verdict === "regression" ? (confirmApprove ? "Click again to confirm" : "Approve anyway") : "Approve & apply";
@@ -339,7 +345,7 @@ function renderDecision(v) {
 
 function renderPanel(v) {
   document.querySelectorAll(".ptab").forEach((b) => b.classList.toggle("active", b.dataset.tab === panelTab));
-  ["graph", "tests", "report"].forEach((t) => $(t).classList.toggle("hidden", t !== panelTab));
+  ["graph", "tests", "report", "terminal"].forEach((t) => $(t).classList.toggle("hidden", t !== panelTab));
   $("graph-legend").classList.toggle("hidden", panelTab !== "graph");
   $("tests-count").textContent = v ? `(${v.r.tests.length})` : "";
   if (!v) {
@@ -429,17 +435,37 @@ function renderGraph(v) {
   cy.on("tap", "node", (e) => openFile(e.target.data("file"), e.target.data("line")));
 }
 
+async function runProgram() {
+  try {
+    const res = await api("/api/run", {});
+    const label = state.approved ? "after approved fix" : runs.length ? "current code" : "before any change";
+    runs.push({ ...res.run, label });
+    panelTab = "terminal";
+    renderTerminal();
+    render();
+  } catch (e) { toast(e.message); }
+}
+
+function renderTerminal() {
+  if (!runs.length) return;
+  const shade = (text) => esc(text).replace(/^(Total.*)$/m, (line) => `<span class="hl">${line}</span>`);
+  $("terminal").innerHTML = runs.map((r) => `<div class="term-run">
+      <div class="term-cmd">$ ${esc(r.cmd.replace(/^\S*python\S*/, "python"))}<span class="tag">${esc(r.label)}</span></div>
+      <div class="term-out">${shade(r.output)}</div></div>`).join("");
+  $("terminal").scrollTop = $("terminal").scrollHeight;
+}
+
 // ---------- events ----------
 $("btn-ask").addEventListener("click", () => act("ask", { request: $("request").value.trim() }));
-$("btn-simulate").addEventListener("click", () => act("simulate", { request: $("request").value.trim() }));
+$("btn-run").addEventListener("click", runProgram);
 $("request").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("btn-ask").click(); } });
-$("btn-revise").addEventListener("click", () => act("revise"));
+$("btn-next").addEventListener("click", (e) => act(e.currentTarget.dataset.action));
 $("btn-approve").addEventListener("click", () => {
   const v = view();
   if (v.r.verdict === "regression" && !confirmApprove) { confirmApprove = true; return renderDecision(v); }
   act("approve");
 });
-$("btn-reset").addEventListener("click", () => act("reset"));
+$("btn-reset").addEventListener("click", () => { runs.length = 0; $("terminal").innerHTML = '<div class="term-empty">Press ▶ Run to execute the program on the current code.</div>'; act("reset"); });
 document.querySelectorAll(".ptab").forEach((b) => b.addEventListener("click", () => {
   panelTab = b.dataset.tab;
   $("graph").dataset.key = "";

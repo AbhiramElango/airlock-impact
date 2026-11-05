@@ -13,6 +13,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from ..agent.fixer import Fixer, Proposal, feedback
+from ..agent.testwriter import TestWriter
+from ..runner import run_command
 from ..pipeline import ImpactAnalyzer
 from ..report import Report
 from ..workspace import IGNORE, apply_patch
@@ -20,12 +22,15 @@ from ..workspace import IGNORE, apply_patch
 STATIC = Path(__file__).resolve().parent / "static"
 TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}
 MAX_BODY = 20_000
+VERDICT_TEXT = {"regression": "regression: a selected test fails",
+                "unvalidated": "tests pass, but some affected code has no test",
+                "validated": "every affected function has passing tests"}
 SOURCE_SUFFIXES = {".py", ".md", ".txt", ".toml", ".cfg", ".ini", ".json", ".yaml", ".yml"}
 
 
 @dataclass
 class Attempt:
-    source: str  # agent | revision | simulated
+    source: str  # agent | revision | tests
     explanation: str
     diff: str
     report: Report
@@ -73,9 +78,9 @@ class Session:
 
 class ReviewApp:
     def __init__(self, repo: Path, seed: Path | None, analyzer: ImpactAnalyzer, fixer: Fixer,
-                 simulated_patch: Path | None, model: str, store: str):
-        self.repo, self.seed, self.analyzer, self.fixer = repo, seed, analyzer, fixer
-        self.simulated_patch, self.model, self.store = simulated_patch, model, store
+                 writer: TestWriter, run_cmd: list[str], model: str, store: str):
+        self.repo, self.seed, self.analyzer, self.fixer, self.writer = repo, seed, analyzer, fixer, writer
+        self.run_cmd, self.model, self.store = run_cmd, model, store
         self.session = Session()
         self.lock = threading.Lock()
         if seed:
@@ -86,7 +91,7 @@ class ReviewApp:
         s = self.session
         return {"repo": self.repo.name, "model": self.model, "store": self.store, "request": s.request,
                 "busy": s.busy, "error": s.error, "approved": s.approved,
-                "can_simulate": bool(self.simulated_patch), "can_reset": bool(self.seed),
+                "run_cmd": " ".join(self.run_cmd), "can_reset": bool(self.seed),
                 "attempts": [a.to_dict() for a in s.attempts],
                 "steps": [{"attempt": st.attempt, "key": st.key, "label": st.label, "status": st.status,
                            "detail": st.detail, "seconds": st.seconds} for st in s.steps]}
@@ -106,9 +111,11 @@ class ReviewApp:
     def start(self, action: str, body: dict) -> dict:
         jobs: dict[str, Callable[[], None]] = {
             "ask": lambda: self._ask((body.get("request") or "").strip()),
-            "simulate": lambda: self._simulate((body.get("request") or "").strip()),
             "revise": self._revise,
+            "cover": self._cover,
         }
+        if action == "run":
+            return self._run_program()
         if action == "approve":
             return self._approve()
         if action == "reset":
@@ -118,7 +125,7 @@ class ReviewApp:
         with self.lock:
             if self.session.busy:
                 raise ValueError("busy with another request")
-            if action in ("ask", "simulate"):
+            if action == "ask":
                 self.session = Session(request=(body.get("request") or "").strip() or "Fix the bug.")
             self.session.busy, self.session.error = True, ""
         threading.Thread(target=self._run, args=(jobs[action],), daemon=True).start()
@@ -137,9 +144,11 @@ class ReviewApp:
 
     def _analyze(self, source: str, proposal: Proposal) -> None:
         log = StepLog(self.session)
-        report = self.analyzer.analyze(self.repo, proposal.diff, log)
+        self._finish(source, proposal, self.analyzer.analyze(self.repo, proposal.diff, log), log)
+
+    def _finish(self, source: str, proposal: Proposal, report: Report, log: StepLog) -> None:
         log.start("verdict", "Verdict")
-        log.done("verdict", report.verdict, ok=report.verdict != "regression")
+        log.done("verdict", VERDICT_TEXT[report.verdict], ok=report.verdict != "regression")
         self.session.attempts.append(Attempt(source, proposal.explanation, proposal.diff, report))
 
     def _ask(self, request: str) -> None:
@@ -149,13 +158,27 @@ class ReviewApp:
         log.done("patch", proposal.explanation)
         self._analyze("agent", proposal)
 
-    def _simulate(self, request: str) -> None:
+    def _cover(self) -> None:
+        if not self.session.attempts:
+            raise ValueError("nothing to cover")
+        last = self.session.attempts[-1]
         log = StepLog(self.session)
-        log.start("patch", "Simulated agent patch (plausible bad fix)")
-        proposal = Proposal("Divides the percentage by 100 and rounds the result.",
-                            self.simulated_patch.read_text())
+        log.start("feedback", "Send untested dependents to the agent")
+        log.done("feedback", ", ".join(last.report.gaps))
+        log.start("patch", f"Local model ({self.model}) writes tests for them")
+        proposal, code = self.writer.cover(self.repo, Proposal(last.explanation, last.diff), last.report)
         log.done("patch", proposal.explanation)
-        self._analyze("simulated", proposal)
+        report = self.analyzer.analyze(self.repo, proposal.diff, log)
+        bad = [t for t in report.tests if "added by patch" in t.why and t.status != "passed"]
+        if bad:  # the new test is wrong, or the code is: let the model look once
+            log.start("selfcheck", "New test failed · agent re-checks its own test")
+            log.done("selfcheck", f"{bad[0].id}: {bad[0].message.splitlines()[0] if bad[0].message else ''}", ok=False)
+            log.start("patch", f"Local model ({self.model}) corrects the test")
+            proposal, _ = self.writer.cover(self.repo, Proposal(last.explanation, last.diff), last.report,
+                                            failed=(code, bad[0].message))
+            log.done("patch", proposal.explanation)
+            report = self.analyzer.analyze(self.repo, proposal.diff, log)
+        self._finish("tests", proposal, report, log)
 
     def _revise(self) -> None:
         if not self.session.attempts:
@@ -169,6 +192,11 @@ class ReviewApp:
                                      last.report)
         log.done("patch", proposal.explanation)
         self._analyze("revision", proposal)
+
+    def _run_program(self) -> dict:
+        """Runs the repo's own entry point (fixed command, never model-chosen) on the current code."""
+        out = run_command(self.repo, self.run_cmd)
+        return {**self.state(), "run": {"cmd": " ".join(self.run_cmd), **out}}
 
     def _approve(self) -> dict:
         with self.lock:

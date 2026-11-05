@@ -3,7 +3,7 @@
 
 def total_with_tip(bill, tip_percent):
     """Bill plus tip. tip_percent is a percentage, e.g. 15 means 15%."""
-    tip = bill * tip_percent
+    tip = bill * tip_percent / 100
     return bill + tip
 
 

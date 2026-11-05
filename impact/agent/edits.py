@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 BLOCK = re.compile(
-    r"FILE:\s*(?P<file>\S+)\s*\n<<<<<<< SEARCH\n(?P<search>.*?)\n?=======\n(?P<replace>.*?)\n?>>>>>>> REPLACE",
+    r"FILE:[ \t]*(?:-+[ \t]*)?`?(?P<file>[^\s`]+?)`?(?:[ \t]*-+)?[ \t]*\n<<<<<<< SEARCH\n(?P<search>.*?)\n?=======\n(?P<replace>.*?)\n?>>>>>>> REPLACE",
     re.S)
 EXPLANATION = re.compile(r"EXPLANATION:\s*(.+?)(?:\n\s*\n|\nFILE:|\Z)", re.S)
 
@@ -47,9 +47,13 @@ def to_diff(root: Path, edits: list[Edit]) -> str:
             e = Edit(e.file, stripped, e.replace)
         new[e.file] = text.replace(e.search, e.replace, 1)
 
+    return unified({f: ((root / f).read_text(), after) for f, after in new.items()})
+
+
+def unified(changes: dict[str, tuple[str, str]]) -> str:
+    """{file: (before, after)} -> one unified diff that `git apply` accepts."""
     chunks = []
-    for file, after in new.items():
-        before = (root / file).read_text()
+    for file, (before, after) in changes.items():
         chunks.extend(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True),
                                            f"a/{file}", f"b/{file}"))
     diff = "".join(chunks)
