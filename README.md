@@ -85,7 +85,7 @@ demo/restaurant/          demo repo
 
 New language: implement `LanguageParser`, `TestRunner` and `EvidenceProvider`; the graph core is unchanged.
 
-## Limits
+## Known limits and next steps
 
 - Static analysis misses dynamic calls (`getattr`, dispatch tables); they are listed as unresolved.
 - A 9B model is brittle at revisions; generate-and-verify makes it usable, not perfect.
