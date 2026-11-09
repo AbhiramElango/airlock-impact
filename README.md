@@ -42,12 +42,13 @@ request ─► local LLM proposes a patch
 - **Runtime evidence:** the test suite runs once under `coverage.py` with per-test contexts, recording which test executed which function.
 - **Blast radius:** reverse traversal from the changed symbols (Cypher in Neo4j, BFS in memory), up to `--max-hops`.
 - **Test selection:** tests found through the graph, tests observed covering the change, tests the patch adds, and tests that were failing before the patch (the reported bug).
-- **Guardrail:** if changing a shared function breaks its other callers, that function and the broken callers are locked. The revision must fix the bug where it appeared. Up to six candidates are generated, and the graph verifies each one.
+- **Guardrail:** if changing a shared function breaks its other callers, that function and the broken callers are locked. The revision must fix the bug where it appeared. In the review UI, up to six candidates are generated, and the graph verifies each one.
 - **Honest verdicts:** `regression`, `unvalidated` (passes, but some affected function has no test), `validated`. Unresolved calls are reported, not hidden.
 
 ## Run it
 
-Needs Python 3.12+, Docker, and [Ollama](https://ollama.com).
+Needs Python 3.12+, [uv](https://docs.astral.sh/uv/), Docker, and [Ollama](https://ollama.com). Run commands from the
+repo root.
 
 ```bash
 ollama pull qwen3.5:9b
@@ -56,11 +57,11 @@ uv venv && uv pip install -e .
 .venv/bin/impact serve                   # http://127.0.0.1:8090 (resets the demo repo)
 ```
 
-Command line, no UI:
+Command line, no UI and no LLM (analysis only; `--store memory` skips Neo4j):
 
 ```bash
-impact index demo/restaurant                       # build the graph
-impact analyze demo/restaurant fix.diff --max-hops 8
+.venv/bin/impact analyze tests/fixtures/restaurant tests/fixtures/patches/round_tax.diff --store memory
+.venv/bin/impact index demo/restaurant           # write the graph to Neo4j (needs docker compose up)
 ```
 
 See [DEMO.md](DEMO.md) for a step-by-step walkthrough of the demo.
