@@ -1,6 +1,7 @@
 [project]
 name = "airlock-impact"
 version = "0.1.0"
+license = "MIT"
 description = "Blast-radius validation for AI-proposed code patches"
 requires-python = ">=3.12"
 dependencies = ["neo4j>=5.20", "coverage>=7.6", "pytest>=8"]

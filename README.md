@@ -3,7 +3,10 @@
 **An AI agent fixed a bug and silently broke a file it never touched. Airlock Impact catches that with a dependency
 graph, and guides the agent to a fix that's safe for everything that depends on the change.**
 
-Runs fully on a laptop: a local model (Ollama), a local graph database (Neo4j), no cloud calls.
+Runs fully on a laptop: a local model (Ollama), a local graph database (Neo4j), no cloud calls. Built on
+[Airlock](https://github.com/AbhiramElango/airlock), my offline coding agent with human approval.
+
+![The agent changed sales_tax() to fix the receipt; the dependency graph shows it broke invoice_total() in a file the agent never touched](docs/regression.png)
 
 ## The problem
 
@@ -60,7 +63,7 @@ impact index demo/restaurant                       # build the graph
 impact analyze demo/restaurant fix.diff --max-hops 8
 ```
 
-See [DEMO.md](DEMO.md) for the two-minute walkthrough.
+See [DEMO.md](DEMO.md) for a step-by-step walkthrough of the demo.
 
 ## Layout
 
